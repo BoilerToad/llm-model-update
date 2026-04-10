@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv*/
+.venv/
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Environment / secrets
+.env
+*.env
+
+# Results — exclude everything except directory skeleton
+results/
+
+# Tests cache
+tests/__pycache__/
+
+# Logs
+*.log
+
+# LaunchAgent plists (machine-specific)
+ollama/com.toddfirsich.*.plist
+mlx/com.toddfirsich.*.plist
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Misc
+probe_models_tail.json
+
+# Research findings and internal protocol — not for public repo
+NEW_MODEL_ASSESSMENT_PROTOCOL.md

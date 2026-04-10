@@ -1,0 +1,22 @@
+# llm-model-update — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Both updaters
+pyyaml>=6.0
+
+# mlx_updater only
+huggingface_hub>=0.23.0
+
+# authoritarianism_probe — Ollama HTTP API
+requests>=2.31.0
+
+# .env loading (OLLAMA_API_KEY etc.)
+python-dotenv>=1.0
+
+# Testing
+pytest>=8.0
+
+# authoritarianism_probe_relay — mcp-relay integration
+# Install separately (editable install from local repo):
+#   pip install -e ~/AI-Development/mcp-relay
+# mcp-relay requires: mcp, httpx, pyyaml, aiosqlite

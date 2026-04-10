@@ -1,0 +1,6 @@
+{
+  "venvPath": "/Users/toddfirsich/VirtualEnvs",
+  "venv": "venv-llm-model-update",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic"
+}
