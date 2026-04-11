@@ -5,14 +5,14 @@
 # across all tool-capable Ollama models.
 #
 # Run from anywhere:
-#   chmod +x ~/AI-Development/llm-model-update/run_relay_probe_q3.sh
-#   ~/AI-Development/llm-model-update/run_relay_probe_q3.sh
+#   chmod +x ~/AI-Development/llm-model-update/code/run_relay_probe_q3.sh
+#   ~/AI-Development/llm-model-update/code/run_relay_probe_q3.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 RELAY_DIR="$HOME/AI-Development/mcp-relay"
-PROBE="$HOME/AI-Development/llm-model-update/authoritarianism_probe_relay.py"
+PROBE="$HOME/AI-Development/llm-model-update/code/authoritarianism_probe_relay.py"
 VENV="$RELAY_DIR/.venv"
 
 echo ""

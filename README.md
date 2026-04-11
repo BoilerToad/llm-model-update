@@ -17,33 +17,81 @@ This framework probes whether language models trained in different national and 
 
 ---
 
+## Repository structure
+
+```
+llm-model-update/
+├── code/                       # Probe scripts and test suite
+│   ├── tests/                  # pytest test suite
+│   ├── probe_static.py         # Main probe runner
+│   ├── probe_endpoint_sweep.py # Multi-sweep reliability baseline
+│   ├── probe_endpoint_test.py  # Single-model endpoint qualification
+│   ├── probe_sweep_judge.py    # LLM-as-judge semantic analysis
+│   ├── probe_tool_capable.py   # Tool-call capability tester
+│   ├── probe_coverage.py       # Coverage gap reporter
+│   ├── probe_db.py             # SQLite ingest and summary
+│   ├── probe_classify.py       # Lexical CCP-voice classifier
+│   ├── probe_classify_with_model.py  # LLM-powered behavioral classification
+│   ├── probe_analysis.py       # Research analysis and findings reports
+│   ├── probe_healthcheck.py    # Pre-run Ollama connectivity check
+│   └── setup_venv.sh           # Venv creation script
+├── mlx/                        # MLX model updater (Apple Silicon)
+│   └── mlx_updater.py
+├── ollama/                     # Ollama model updater
+│   └── ollama_updater.py
+├── shared/                     # Shared utilities (config, logging)
+├── probes/
+│   ├── probe_models.json       # Model registry — single source of truth
+│   └── questions.json          # 25-question probe bank
+├── results/                    # Output data (excluded from repo)
+│   ├── data/probes/            # probe_static.py output
+│   ├── data/sweeps/            # probe_endpoint_sweep.py output
+│   ├── data/judges/            # probe_sweep_judge.py output
+│   ├── db/                     # SQLite database
+│   └── reports/coverage/       # Dated coverage reports
+└── NEW_MODEL_ASSESSMENT_PROTOCOL.md  # Step-by-step protocol for new models
+```
+
+---
+
 ## Requirements
 
-- Python 3.12+
+- Python 3.12+ (via pyenv: `pyenv install 3.12.0`)
 - [Ollama](https://ollama.com) running locally (`ollama serve`)
-- API key in `~/.env` for cloud model access (`OLLAMA_API_KEY`)
+- `OLLAMA_API_KEY` in `~/.env` for cloud model access
+
+**First-time setup** — creates venv at `~/VirtualEnvs/venv-llm-model-update` and runs the test suite:
 
 ```bash
-pip install -r requirements.txt
+cd code
+chmod +x setup_venv.sh && ./setup_venv.sh
+```
+
+**Subsequent sessions** — activate the venv before any run:
+
+```bash
+source ~/VirtualEnvs/venv-llm-model-update/bin/activate
 ```
 
 ---
 
 ## Core tools
 
+All scripts are under `code/`. Run from the project root with the venv active.
+
 | Script | Purpose |
 |---|---|
-| `probe_static.py` | Main probe runner — chat + generate across models |
-| `probe_endpoint_sweep.py` | Multi-sweep reliability baseline |
-| `probe_endpoint_test.py` | Infrastructure qualification for a single model |
-| `probe_sweep_judge.py` | LLM-as-judge semantic consistency analysis |
-| `probe_tool_capable.py` | Tool-call capability tester (writes to registry) |
-| `probe_coverage.py` | Coverage gap reporter |
-| `probe_db.py` | SQLite ingest and summary |
-| `probe_classify.py` | Lexical CCP-voice classifier |
-| `probe_classify_with_model.py` | LLM-powered behavioral classification |
-| `probe_analysis.py` | Research analysis and findings reports |
-| `probe_healthcheck.py` | Pre-run Ollama connectivity check |
+| `code/probe_static.py` | Main probe runner — chat + generate across models |
+| `code/probe_endpoint_sweep.py` | Multi-sweep reliability baseline |
+| `code/probe_endpoint_test.py` | Infrastructure qualification for a single model |
+| `code/probe_sweep_judge.py` | LLM-as-judge semantic consistency analysis |
+| `code/probe_tool_capable.py` | Tool-call capability tester (writes to registry) |
+| `code/probe_coverage.py` | Coverage gap reporter |
+| `code/probe_db.py` | SQLite ingest and summary |
+| `code/probe_classify.py` | Lexical CCP-voice classifier |
+| `code/probe_classify_with_model.py` | LLM-powered behavioral classification |
+| `code/probe_analysis.py` | Research analysis and findings reports |
+| `code/probe_healthcheck.py` | Pre-run Ollama connectivity check |
 
 ---
 
@@ -51,29 +99,31 @@ pip install -r requirements.txt
 
 ```bash
 # Check Ollama connectivity and model availability
-python probe_healthcheck.py
+python code/probe_healthcheck.py
 
 # Run sensitivity probes on a single model
-python probe_static.py --questions Q10b Q12b --models "<model-name>"
+python code/probe_static.py --questions Q10b Q12b --models "<model-name>"
 
 # Run full 25-question suite
-python probe_static.py --all-questions --models "<model-name>" --label full_suite
+python code/probe_static.py --all-questions --models "<model-name>" --label full_suite
 
 # Ingest results and check coverage
-python probe_db.py --ingest
-python probe_coverage.py
+python code/probe_db.py --ingest
+python code/probe_coverage.py
 
 # Run tests
-pytest tests/ -v
+pytest code/tests/ -v
 ```
 
 ---
 
 ## Model registry
 
-`probes/probe_models.json` is the single source of truth for model metadata and empirically determined capabilities. Never edit directly for new models — use `--sync-probes` then fill null research fields.
+`probes/probe_models.json` is the single source of truth for model metadata and empirically determined capabilities. Never edit directly for new models — use `--sync-probes` then fill only the null research fields it flags.
 
 `probes/questions.json` contains the 25-question probe bank across four themes: authoritarianism, trade, EU governance, and AI regulation.
+
+See [`NEW_MODEL_ASSESSMENT_PROTOCOL.md`](NEW_MODEL_ASSESSMENT_PROTOCOL.md) for the full step-by-step protocol for adding and assessing a new model.
 
 ---
 
