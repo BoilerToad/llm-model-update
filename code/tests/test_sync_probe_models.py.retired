@@ -1,0 +1,294 @@
+"""
+tests/test_sync_probe_models.py
+─────────────────────────────────────────────────────────────────────────────
+Tests for ollama_updater.py::sync_probe_models() and _infer_probe_entry().
+
+All tests are self-contained — no Ollama instance required.
+Synthetic probe_models.json and models.yaml data used throughout.
+
+Run:
+    pytest tests/test_sync_probe_models.py -v
+─────────────────────────────────────────────────────────────────────────────
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "ollama"))
+
+from ollama_updater import sync_probe_models, _infer_probe_entry
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _make_probe_json(models: list[dict]) -> dict:
+    return {
+        "_meta": {
+            "version": "1.0",
+            "description": "test",
+            "changelog": {"1.0": "initial"},
+        },
+        "models": models,
+    }
+
+
+def _make_yaml_config(model_names: list[str], cloud: bool = False) -> dict:
+    return {
+        "models": [
+            {"name": n, "update": "check", "cloud": cloud, "notes": "test"}
+            for n in model_names
+        ]
+    }
+
+
+def _write_probe_json(path: Path, data: dict):
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+class _NullLogger:
+    """Silent logger — swallows all output during tests."""
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+    def debug(self, *a, **k): pass
+
+
+LOGGER = _NullLogger()
+
+
+# ── Tests: _infer_probe_entry ──────────────────────────────────────────────────
+
+class TestInferProbeEntry:
+    def test_returns_required_keys(self):
+        entry = _infer_probe_entry("falcon3:10b", {"cloud": False}, {})
+        required = ["name", "backend", "size_gb", "family", "geopolitical_origin",
+                    "tool_capable", "think_blocks", "chat_alignment_strong",
+                    "notes", "enabled"]
+        for key in required:
+            assert key in entry, f"Missing key: {key}"
+
+    def test_name_preserved(self):
+        entry = _infer_probe_entry("falcon3:10b", {}, {})
+        assert entry["name"] == "falcon3:10b"
+
+    def test_enabled_true_by_default(self):
+        entry = _infer_probe_entry("some-model:7b", {}, {})
+        assert entry["enabled"] is True
+
+    def test_backend_is_ollama(self):
+        entry = _infer_probe_entry("gemma3:4b", {}, {})
+        assert entry["backend"] == "ollama"
+
+    def test_research_fields_are_null(self):
+        """tool_capable, think_blocks, chat_alignment_strong must be null — human fills these."""
+        entry = _infer_probe_entry("llama3.2:latest", {}, {})
+        assert entry["tool_capable"] is None
+        assert entry["think_blocks"] is None
+        assert entry["chat_alignment_strong"] is None
+
+    def test_falcon_infers_uae_origin(self):
+        entry = _infer_probe_entry("falcon3:10b", {}, {})
+        assert entry["geopolitical_origin"] == "UAE/TII"
+
+    def test_llama_infers_us_meta(self):
+        entry = _infer_probe_entry("llama3.2:latest", {}, {})
+        assert entry["geopolitical_origin"] == "US/Meta"
+
+    def test_deepseek_infers_china(self):
+        entry = _infer_probe_entry("deepseek-r1:7b", {}, {})
+        assert entry["geopolitical_origin"] == "China/DeepSeek"
+
+    def test_qwen_infers_china_alibaba(self):
+        entry = _infer_probe_entry("qwen3.5:latest", {}, {})
+        assert "China" in (entry["geopolitical_origin"] or "")
+
+    def test_mistral_infers_france(self):
+        entry = _infer_probe_entry("mixtral:8x7b", {}, {})
+        assert "France" in (entry["geopolitical_origin"] or "")
+
+    def test_cloud_model_size_is_zero(self):
+        entry = _infer_probe_entry("deepseek-v3.2:cloud", {"cloud": True}, {})
+        assert entry["size_gb"] == 0
+
+    def test_size_inferred_from_tags(self):
+        tags = {
+            "falcon3:10b": {
+                "size": 6_300_000_000,
+                "details": {"family": "llama", "families": ["llama"], "parameter_size": "10B"}
+            }
+        }
+        entry = _infer_probe_entry("falcon3:10b", {}, tags)
+        assert entry["size_gb"] == pytest.approx(6.3, abs=0.1)
+
+    def test_notes_contains_action_reminder(self):
+        entry = _infer_probe_entry("new-model:7b", {}, {})
+        assert "geopolitical_origin" in entry["notes"]
+        assert "tool_capable" in entry["notes"]
+
+    def test_unknown_model_has_null_geo(self):
+        entry = _infer_probe_entry("completely-unknown-model:7b", {}, {})
+        # Should not raise — geo may be None for unknown families
+        assert "geopolitical_origin" in entry
+
+
+# ── Tests: sync_probe_models ───────────────────────────────────────────────────
+
+class TestSyncProbeModels:
+    def test_adds_missing_model(self, tmp_path):
+        """Model in models.yaml but not in probe_models.json gets added."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([
+            {"name": "existing-model:7b", "enabled": True}
+        ]))
+        config = _make_yaml_config(["existing-model:7b", "new-model:7b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert "new-model:7b" in added
+        result = json.loads(probe_file.read_text())
+        names = [m["name"] for m in result["models"]]
+        assert "new-model:7b" in names
+
+    def test_does_not_duplicate_existing(self, tmp_path):
+        """Models already in probe_models.json are not added again."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([
+            {"name": "falcon3:7b", "enabled": True}
+        ]))
+        config = _make_yaml_config(["falcon3:7b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert added == []
+        result = json.loads(probe_file.read_text())
+        falcon_entries = [m for m in result["models"] if m["name"] == "falcon3:7b"]
+        assert len(falcon_entries) == 1   # exactly one — no duplicate
+
+    def test_version_bumped(self, tmp_path):
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["llama3.2:latest"])
+
+        sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        result = json.loads(probe_file.read_text())
+        assert result["_meta"]["version"] != "1.0"
+
+    def test_changelog_updated(self, tmp_path):
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["llama3.2:latest"])
+
+        sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        result = json.loads(probe_file.read_text())
+        changelog = result["_meta"]["changelog"]
+        # New version entry must mention the added model
+        latest_entry = list(changelog.values())[-1]
+        assert "llama3.2:latest" in latest_entry
+
+    def test_skips_embedding_models(self, tmp_path):
+        """bert/clip family models must never be added to probe_models.json."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["mxbai-embed-large:latest"])
+
+        # Simulate tags showing this is a bert model
+        import unittest.mock as mock
+        tags = [{"name": "mxbai-embed-large:latest", "size": 500_000_000,
+                 "details": {"family": "bert", "families": ["bert"]}}]
+        with mock.patch("ollama_updater.get_ollama_tags", return_value=tags):
+            added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert "mxbai-embed-large:latest" not in added
+
+    def test_skips_vision_models(self, tmp_path):
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["llama3.2-vision:11b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert "llama3.2-vision:11b" not in added
+
+    def test_new_entry_has_null_research_fields(self, tmp_path):
+        """Entries added by --sync-probes must have null research fields."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["falcon3:10b"])
+
+        sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "falcon3:10b")
+        assert entry["tool_capable"] is None
+        assert entry["think_blocks"] is None
+        assert entry["chat_alignment_strong"] is None
+
+    def test_inserted_before_disabled_entries(self, tmp_path):
+        """New entries should appear before disabled/archived models at the end."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([
+            {"name": "active-model:7b", "enabled": True},
+            {"name": "archived-model:7b", "enabled": False},
+        ]))
+        config = _make_yaml_config(["active-model:7b", "new-model:7b"])
+
+        sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        result = json.loads(probe_file.read_text())
+        names = [m["name"] for m in result["models"]]
+        new_idx      = names.index("new-model:7b")
+        archived_idx = names.index("archived-model:7b")
+        assert new_idx < archived_idx
+
+    def test_returns_empty_when_nothing_to_add(self, tmp_path):
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([
+            {"name": "falcon3:7b", "enabled": True}
+        ]))
+        config = _make_yaml_config(["falcon3:7b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+        assert added == []
+
+    def test_missing_probe_file_returns_empty(self, tmp_path):
+        probe_file = tmp_path / "nonexistent.json"
+        config     = _make_yaml_config(["some-model:7b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+        assert added == []
+
+    def test_multiple_models_added_in_one_call(self, tmp_path):
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["llama3.2:latest", "gemma3:4b", "deepseek-r1:7b"])
+
+        added = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert len(added) == 3
+        result = json.loads(probe_file.read_text())
+        names = [m["name"] for m in result["models"]]
+        assert "llama3.2:latest" in names
+        assert "gemma3:4b" in names
+        assert "deepseek-r1:7b" in names
+
+    def test_idempotent_second_run(self, tmp_path):
+        """Running --sync-probes twice must not add duplicates."""
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe_json(probe_file, _make_probe_json([]))
+        config = _make_yaml_config(["falcon3:10b"])
+
+        sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+        added_second = sync_probe_models(LOGGER, config, probe_models_file=probe_file)
+
+        assert added_second == []
+        result = json.loads(probe_file.read_text())
+        entries = [m for m in result["models"] if m["name"] == "falcon3:10b"]
+        assert len(entries) == 1

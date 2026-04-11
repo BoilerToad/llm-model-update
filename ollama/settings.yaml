@@ -1,0 +1,9 @@
+# ollama/settings.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime configuration for ollama_updater.py.
+# Model registry has moved to probes/probe_models.json.
+# ─────────────────────────────────────────────────────────────────────────────
+
+pull_delay_seconds: 2
+log_file: ~/Library/Logs/llm-model-update/ollama.log
+log_retention_days: 30

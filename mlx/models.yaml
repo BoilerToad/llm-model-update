@@ -1,0 +1,90 @@
+# mlx/models.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Control file for mlx_updater.py
+#
+# Models are HuggingFace repo IDs (owner/repo-name).
+# Most will be from mlx-community (pre-quantized, Apple-silicon-ready).
+#
+# Fields per model:
+#   repo_id  : HuggingFace repo ID                                (required)
+#   update   : true  → download if remote commit hash differs from local
+#              false → pinned, never touched
+#              check → report if stale but do not download
+#   revision : branch / tag / full commit hash to track          (default: main)
+#   notes    : free-text reminder                                 (optional)
+#
+# Run modes (--mode flag or MLX_UPDATE_MODE env var):
+#   auto   → respect each model's `update` field                  (default)
+#   all    → refresh every model in the list if stale
+#   check  → dry-run for everything; show what's stale
+# ─────────────────────────────────────────────────────────────────────────────
+
+settings:
+  hf_cache_dir: ""
+  download_delay_seconds: 3
+  log_file: ~/Library/Logs/llm-model-update/mlx.log
+  log_retention_days: 30
+  hf_token: ""
+
+models:
+
+  # ── Llama ─────────────────────────────────────────────────────────────────
+  - repo_id: mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+    update: true
+    revision: main
+    notes: ""
+
+  - repo_id: mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
+    update: true
+    revision: main
+    notes: "Cached — higher quality variant"
+
+  # ── Mistral ───────────────────────────────────────────────────────────────
+  - repo_id: mlx-community/Mistral-7B-Instruct-v0.3-4bit
+    update: true
+    revision: main
+    notes: "Workhorse chat model"
+
+  # ── Gemma ─────────────────────────────────────────────────────────────────
+  - repo_id: mlx-community/gemma-3-4b-it-4bit
+    update: true
+    revision: main
+    notes: "Cached — fast / small Gemma 3"
+
+  - repo_id: mlx-community/gemma-3-12b-it-4bit
+    update: true
+    revision: main
+    notes: "Cached"
+
+  - repo_id: mlx-community/gemma-3-12b-it-4bit-DWQ
+    update: true
+    revision: main
+    notes: "Cached — DWQ quantization variant"
+
+  # ── Qwen ──────────────────────────────────────────────────────────────────
+  - repo_id: mlx-community/Qwen3-4B-4bit
+    update: true
+    revision: main
+    notes: "Fast / small reasoning model"
+
+  # ── Phi ───────────────────────────────────────────────────────────────────
+  - repo_id: mlx-community/Phi-3.5-mini-instruct-4bit
+    update: false
+    revision: main
+    notes: "Pinned — custom system prompt, do not auto-update"
+
+  # ── mcp-relay eval corpus — review before updating ────────────────────────
+  - repo_id: mlx-community/Qwen3.5-4B-MLX-4bit
+    update: check
+    revision: main
+    notes: "Used in mcp-relay SSRF eval runs — review before updating"
+
+  - repo_id: mlx-community/Qwen3.5-9B-MLX-4bit
+    update: check
+    revision: main
+    notes: "Used in mcp-relay SSRF eval runs — review before updating"
+
+  - repo_id: mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit
+    update: check
+    revision: main
+    notes: "Used in mcp-relay SSRF eval runs — review before updating"
