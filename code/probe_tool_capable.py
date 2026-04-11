@@ -42,11 +42,18 @@ from dotenv import load_dotenv
 
 load_dotenv(Path.home() / ".env")
 
+from probe_query_openai import (
+    is_openai_backend,
+    query_chat_openai,
+    check_api_key as check_openai_api_key,
+)
+
 OLLAMA_LOCAL   = "http://localhost:11434"
 OLLAMA_CLOUD   = "https://ollama.com"
 SCRIPT_DIR     = Path(__file__).parent
-MODELS_FILE    = SCRIPT_DIR / "probes" / "probe_models.json"
-QUESTIONS_FILE = SCRIPT_DIR / "probes" / "questions.json"
+ROOT_DIR       = SCRIPT_DIR.parent
+MODELS_FILE    = ROOT_DIR / "probes" / "probe_models.json"
+QUESTIONS_FILE = ROOT_DIR / "probes" / "questions.json"
 
 DEFAULT_QUESTION_ID = "Q03"
 
@@ -250,12 +257,47 @@ def run_tool_capable(
     model: str,
     question: str,
     timeout: int = 120,
+    registry: dict | None = None,
 ) -> ToolTestResult:
     """
-    Send one /api/chat request with a tools schema and classify the response.
-    Routes cloud models (name contains 'cloud') to OLLAMA_CLOUD with Bearer auth.
+    Send one chat request with a tools schema and classify the response.
+    Routes xAI/OpenAI-backend models through probe_query_openai.
+    Routes Ollama cloud models to OLLAMA_CLOUD with Bearer auth.
     """
     result  = ToolTestResult(model)
+    entry   = (registry or {}).get(model, {"name": model, "backend": "ollama"})
+
+    # ── xAI / OpenAI-compatible backend ──────────────────────────────────────
+    if is_openai_backend(entry):
+        ok, detail = check_openai_api_key(entry)
+        if not ok:
+            result.error = detail
+            return result
+        oai = query_chat_openai(entry, question, timeout, tools=[WEB_FETCH_TOOL])
+        if not oai["success"]:
+            result.error = oai.get("error", "unknown error")
+            result.elapsed_s = oai["elapsed_s"]
+            return result
+        result.elapsed_s = oai["elapsed_s"]
+        # xAI returns tool_calls in OpenAI format
+        tool_calls_raw = oai.get("tool_calls", [])
+        if tool_calls_raw:
+            fn = tool_calls_raw[0].get("function", {})
+            result.classification = TOOL_CALL
+            result.tool_name      = fn.get("name")
+            result.tool_args      = fn.get("arguments", {})
+        else:
+            content = oai.get("answer", "").strip()
+            lower   = content.lower()
+            if any(s in lower for s in REFUSAL_SIGNALS):
+                result.classification = REFUSED
+            elif content:
+                result.classification = TEXT_ONLY
+            result.response_len = len(content)
+            result.snippet      = content[:120].replace("\n", " ")
+        return result
+
+    # ── Ollama (local or cloud) ───────────────────────────────────────────────
     llm_url = llm_url_for(model)
     payload = {
         "model":    model,
@@ -381,7 +423,7 @@ def main() -> None:
         print(f"  {'─'*60}")
         print(f"  Testing tool_capable ...", end=" ", flush=True)
 
-        result = run_tool_capable(model, question_text, args.timeout)
+        result = run_tool_capable(model, question_text, args.timeout, registry=load_registry())
         results[model] = result
 
         print(f"{result.elapsed_s:.2f}s")

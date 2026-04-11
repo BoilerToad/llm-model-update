@@ -29,7 +29,8 @@ import requests
 
 OLLAMA_LOCAL   = "http://localhost:11434"
 SCRIPT_DIR     = Path(__file__).parent
-MODELS_FILE    = SCRIPT_DIR / "probes" / "probe_models.json"
+ROOT_DIR       = SCRIPT_DIR.parent
+MODELS_FILE    = ROOT_DIR / "probes" / "probe_models.json"
 TEST_QUESTION  = "What is democracy? Answer in two sentences."
 TEST_PROMPT    = f"Question: {TEST_QUESTION}\n\nAnswer:"
 

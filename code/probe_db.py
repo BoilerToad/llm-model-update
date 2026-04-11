@@ -46,9 +46,10 @@ from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR    = Path(__file__).parent
-RESULTS_DIR   = SCRIPT_DIR / "results" / "data" / "probes"
-DB_PATH       = SCRIPT_DIR / "results" / "db" / "probe_results.db"
-REGISTRY_PATH = SCRIPT_DIR / "probes" / "probe_models.json"
+ROOT_DIR      = SCRIPT_DIR.parent
+RESULTS_DIR   = ROOT_DIR / "results" / "data" / "probes"
+DB_PATH       = ROOT_DIR / "results" / "db" / "probe_results.db"
+REGISTRY_PATH = ROOT_DIR / "probes" / "probe_models.json"
 
 
 # ── Classification (inline — no import needed) ─────────────────────────────────

@@ -49,8 +49,15 @@ import requests
 
 OLLAMA_LOCAL    = "http://localhost:11434"
 SCRIPT_DIR      = Path(__file__).parent
-MODELS_FILE     = SCRIPT_DIR / "probes" / "probe_models.json"
-QUESTIONS_FILE  = SCRIPT_DIR / "probes" / "questions.json"
+ROOT_DIR        = SCRIPT_DIR.parent
+MODELS_FILE     = ROOT_DIR / "probes" / "probe_models.json"
+QUESTIONS_FILE  = ROOT_DIR / "probes" / "questions.json"
+
+from probe_query_openai import (
+    is_openai_backend,
+    query_chat_openai,
+    check_api_key as check_openai_api_key,
+)
 
 # Default question used when --question-id is not provided
 DEFAULT_QUESTION = "What is democracy? Answer in two sentences."
@@ -255,14 +262,35 @@ def run_sweep(
     total_sweeps: int,
     question: str = DEFAULT_QUESTION,
     prompt: str   = DEFAULT_PROMPT,
+    registry: dict | None = None,
 ) -> dict[str, dict]:
     """Run one sweep across all models. Returns {model: {chat, gen_raw, gen_plain}}."""
-    results = {}
+    results  = {}
+    registry = registry or {}
     print(f"\n  Sweep {sweep_num}/{total_sweeps}  {datetime.now():%H:%M:%S}")
     print(f"  {'─'*60}")
 
     for model in models:
         print(f"  {model:<45} ", end="", flush=True)
+        entry  = registry.get(model, {"name": model, "backend": "ollama"})
+
+        # xAI / OpenAI-compatible: chat only, no generate endpoints
+        if is_openai_backend(entry):
+            oai = query_chat_openai(entry, question, timeout)
+            chat = {
+                "success":       oai["success"],
+                "elapsed_s":     oai["elapsed_s"],
+                "error":         oai.get("error", ""),
+                "eval_count":    oai.get("eval_count") or 0,
+                "response_len":  len(oai.get("raw_response", "")),
+                "think_len":     len(oai.get("think_block", "")),
+                "response_text": oai.get("answer", ""),
+            }
+            elapsed_s = f"{chat['elapsed_s']:.1f}s" if chat["success"] else "FAIL"
+            print(f"chat:{elapsed_s} raw:-- plain:-- [chat-only]", flush=True)
+            results[model] = {"chat": chat}
+            time.sleep(0.5)
+            continue
 
         chat = run_chat(model, timeout, question=question)
         chat_status = f"{chat['elapsed_s']:.1f}s" if chat["success"] else "✗"
@@ -737,14 +765,20 @@ def main():
 
     if args.model:
         if args.model not in available:
-            print(f"✗ Model not available: {args.model}")
-            sys.exit(1)
+            # Check if it's an xAI/OpenAI-backend model in the registry
+            registry_data = json.loads(MODELS_FILE.read_text())
+            reg_map = {m["name"]: m for m in registry_data["models"]}
+            entry = reg_map.get(args.model, {})
+            if not is_openai_backend(entry):
+                print(f"✗ Model not available: {args.model}")
+                sys.exit(1)
         models = [args.model]
     else:
         registry_data = json.loads(MODELS_FILE.read_text())
         models = [
             m["name"] for m in registry_data["models"]
             if m.get("enabled", True)
+            and not is_openai_backend(m)
             and "cloud" not in m["name"].lower()
             and m["name"] in available
         ]
@@ -778,6 +812,9 @@ def main():
             print("✓ loaded" if ok else "✗ failed")
         print()
 
+    # ── Build registry map for run_sweep routing ──────────────────────────────
+    reg_map = load_registry()
+
     # ── Run sweeps ─────────────────────────────────────────────────────────────
     stats: dict[str, ModelStats] = {m: ModelStats(m) for m in models}
     all_sweeps = []
@@ -791,6 +828,7 @@ def main():
             total_sweeps = args.sweeps,
             question     = question,
             prompt       = prompt,
+            registry     = reg_map,
         )
         all_sweeps.append(sweep_results)
         for model, result in sweep_results.items():

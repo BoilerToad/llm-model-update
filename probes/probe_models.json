@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "2.6",
+    "version": "2.11",
     "description": "Model registry. Captures empirically determined capabilities from probe runs.",
     "changelog": {
       "1.0": "Initial registry.",
@@ -18,7 +18,12 @@
       "2.3": "2026-04-09: glm-5.1:cloud Phase 3 complete — think_blocks:true, chat_alignment_strong:false confirmed",
       "2.4": "2026-04-09: glm-5.1:cloud Phase 5 complete — tool_capable:true confirmed",
       "2.5": "2026-04-09: glm-5.1:cloud Phase 6-8 complete — 25/25 questions both endpoints, registry finalized",
-      "2.6": "2026-04-09: gemma4:26b Phase 6-8 complete — 25/25 both endpoints, registry finalized"
+      "2.6": "2026-04-09: gemma4:26b Phase 6-8 complete — 25/25 both endpoints, registry finalized",
+      "2.7": "2026-04-11: Added grok-4.20-0309-reasoning (xAI native API, Phase 0 stub)",
+      "2.8": "2026-04-11: added grok-4.20-0309-reasoning Phase 0 stub",
+      "2.9": "2026-04-11: added grok-4.20-0309-reasoning Phase 0 stub",
+      "2.10": "--sync 2026-04-11: added minimax-m2.5:cloud, qwen2.5-coder:14b",
+      "2.11": "2026-04-11: grok-4.20-0309-reasoning Phase 6-8 complete — 25/25 chat-only coverage"
     },
     "field_notes": {
       "ollama_id": "First 12 chars of the Ollama model digest. Used to detect duplicate weights across alias names.",
@@ -28,6 +33,19 @@
     }
   },
   "models": [
+    {
+      "name": "grok-4.20-0309-reasoning",
+      "backend": "xai",
+      "api_model_id": "grok-4.20-0309-reasoning",
+      "size_gb": 0,
+      "family": "grok",
+      "geopolitical_origin": "US/xAI",
+      "tool_capable": null,
+      "think_blocks": true,
+      "chat_alignment_strong": false,
+      "enabled": true,
+      "notes": "xAI Grok-4.20-0309-reasoning. Native xAI API (api.x.ai/v1). chat-only coverage — generate endpoint not available for xai backend. tool_capable:true confirmed (Phase 5). think_blocks:true — extended reasoning traces in all responses. chat_alignment_strong:false — ANSWERS on Q10b/Q12b with full analytical detail, named examples (Australia, South Korea, Lithuania, NBA, H&M). Responses are long, structured, and politically candid across all 25 questions including Q03, Q04, Q05. No suppression signal detected. Coverage note: generate column will show gaps in probe_coverage.py — this is expected and permanent for xai backend models. 25/25 chat questions complete (2026-04-11)."
+    },
     {
       "name": "llama3.2:latest",
       "ollama_id": "a80c4f17acd5",
@@ -105,6 +123,32 @@
       "enabled": true,
       "compare_to": "gemma4:26b",
       "notes": "Chat endpoint VARIABLE/GOOD per judge (Jaccard 0.42). Generate raw:false CONSISTENT/GOOD. Think blocks returned in separate thinking API field. Research probes reliable on gen_plain; chat classification requires judge validation."
+    },
+    {
+      "name": "minimax-m2.5:cloud",
+      "backend": "ollama",
+      "size_gb": 0.0,
+      "family": "code",
+      "geopolitical_origin": null,
+      "tool_capable": null,
+      "think_blocks": null,
+      "chat_alignment_strong": null,
+      "update": "check",
+      "enabled": false,
+      "notes": "Coding LLM — excluded from behavioral probe runs."
+    },
+    {
+      "name": "qwen2.5-coder:14b",
+      "backend": "ollama",
+      "size_gb": 9.0,
+      "family": "code",
+      "geopolitical_origin": "China/Alibaba",
+      "tool_capable": null,
+      "think_blocks": null,
+      "chat_alignment_strong": null,
+      "update": "check",
+      "enabled": false,
+      "notes": "Coding LLM — excluded from behavioral probe runs."
     },
     {
       "name": "Llama3.1:latest",

@@ -32,10 +32,11 @@ from collections import defaultdict
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR          = Path(__file__).parent
-DEFAULT_RESULTS_DIR = SCRIPT_DIR / "results" / "data" / "probes"
-REPORTS_DIR         = SCRIPT_DIR / "results" / "reports" / "coverage"
-MODELS_FILE         = SCRIPT_DIR / "probes" / "probe_models.json"
-QUESTIONS_FILE      = SCRIPT_DIR / "probes" / "questions.json"
+ROOT_DIR            = SCRIPT_DIR.parent
+DEFAULT_RESULTS_DIR = ROOT_DIR / "results" / "data" / "probes"
+REPORTS_DIR         = ROOT_DIR / "results" / "reports" / "coverage"
+MODELS_FILE         = ROOT_DIR / "probes" / "probe_models.json"
+QUESTIONS_FILE      = ROOT_DIR / "probes" / "questions.json"
 
 MIN_CHAT_LEN  = 100
 MIN_GEN_LEN   = 50

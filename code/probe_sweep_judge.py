@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 load_dotenv(Path.home() / ".env")
 
 SCRIPT_DIR   = Path(__file__).parent
+ROOT_DIR     = SCRIPT_DIR.parent
 OLLAMA_CLOUD = "https://ollama.com"
 OLLAMA_LOCAL = "http://localhost:11434"
 
@@ -358,7 +359,7 @@ def run_judgement(
     # ── Save ──────────────────────────────────────────────────────────────────
     if out_path is None:
         ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = SCRIPT_DIR / "results" / "data" / "judges" / f"judge_{ts}.json"
+        out_path = ROOT_DIR / "results" / "data" / "judges" / f"judge_{ts}.json"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(

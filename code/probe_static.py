@@ -52,11 +52,21 @@ from dotenv import load_dotenv
 
 load_dotenv(Path.home() / ".env")
 
+from probe_query_openai import (
+    is_openai_backend,
+    query_chat_openai,
+    query_generate_openai,
+    check_api_key as check_openai_api_key,
+    provider_label,
+)
+
 OLLAMA_LOCAL = "http://localhost:11434"
 OLLAMA_CLOUD = "https://ollama.com"
-DEFAULT_QUESTIONS_FILE = Path(__file__).parent / "probes" / "questions.json"
-DEFAULT_MODELS_FILE    = Path(__file__).parent / "probes" / "probe_models.json"
-DEFAULT_OUTPUT_DIR     = Path(__file__).parent / "results" / "data" / "probes"
+SCRIPT_DIR             = Path(__file__).parent
+ROOT_DIR               = SCRIPT_DIR.parent
+DEFAULT_QUESTIONS_FILE = ROOT_DIR / "probes" / "questions.json"
+DEFAULT_MODELS_FILE    = ROOT_DIR / "probes" / "probe_models.json"
+DEFAULT_OUTPUT_DIR     = ROOT_DIR / "results" / "data" / "probes"
 
 # Cache of needs_raw_false() results — keyed by model name
 _mlx_cache: dict[str, bool] = {}
@@ -83,6 +93,14 @@ def load_questions(path: Path) -> list[dict]:
 
 def load_models(path: Path) -> list[dict]:
     return json.loads(path.read_text())["models"]
+
+
+def get_model_entry(model_name: str, all_model_defs: list[dict]) -> dict:
+    """Return the registry entry for a model name, or a minimal stub."""
+    for m in all_model_defs:
+        if m["name"] == model_name:
+            return m
+    return {"name": model_name, "backend": "ollama"}
 
 
 def filter_questions(questions, ids, theme, tags, all_questions):
@@ -478,32 +496,48 @@ def main():
     all_results = []
 
     for i, model in enumerate(models, 1):
-        llm_url  = llm_url_for(model)
-        label_s  = "cloud" if llm_url == OLLAMA_CLOUD else "local"
+        entry    = get_model_entry(model, all_model_defs)
+        openai   = is_openai_backend(entry)
+        llm_url  = llm_url_for(model) if not openai else None
+        label_s  = provider_label(entry) if openai else ("cloud" if llm_url == OLLAMA_CLOUD else "local")
         compat_tag = " [raw:false]" if model in raw_false_models else ""
+        compat_tag += " [chat-only]" if openai else ""
         print(f"[{i}/{len(models)}] {model}  [{label_s}]{compat_tag}")
 
-        if not model_is_available(model, llm_url=llm_url):
+        if openai:
+            ok, detail = check_openai_api_key(entry)
+            if not ok:
+                print(f"  ⚠ Skipping — {detail}")
+                all_results.append({"model": model, "skipped": True,
+                                     "reason": detail, "responses": {}})
+                continue
+        elif not model_is_available(model, llm_url=llm_url):
             print(f"  ⚠ Skipping — not available")
             all_results.append({"model": model, "skipped": True,
                                  "reason": "not available", "responses": {}})
             continue
 
         model_result = {"model": model, "skipped": False,
-                        "llm_url": llm_url, "responses": {}}
+                        "llm_url": llm_url or label_s, "responses": {}}
 
         for q in questions:
             qid = q["id"]
             print(f"  {qid} ", end="", flush=True)
 
-            chat = query_chat(model, q["text"], args.timeout, llm_url=llm_url)
+            if openai:
+                chat = query_chat_openai(entry, q["text"], args.timeout)
+            else:
+                chat = query_chat(model, q["text"], args.timeout, llm_url=llm_url)
             print(f"chat:{'✓' if chat['success'] else '✗'} ", end="", flush=True)
             model_result["responses"][f"{qid}_chat"] = chat
 
             if not args.no_generate:
-                gen = query_generate(
-                    model, q["text"], args.generate_timeout, llm_url=llm_url
-                )
+                if openai:
+                    gen = query_generate_openai(entry, q["text"], args.generate_timeout)
+                else:
+                    gen = query_generate(
+                        model, q["text"], args.generate_timeout, llm_url=llm_url
+                    )
                 print(f"gen:{'✓' if gen['success'] else '✗'}", flush=True)
                 model_result["responses"][f"{qid}_generate"] = gen
             else:
