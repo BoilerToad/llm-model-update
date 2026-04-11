@@ -8,12 +8,25 @@ This framework probes whether language models trained in different national and 
 
 ## What it does
 
-- Runs a 25-question geopolitical probe bank against any Ollama-registered model (local or cloud)
-- Tests both `/api/chat` and `/api/generate` endpoints to detect weight-level vs. formatting-layer conditioning
+- Runs a 25-question geopolitical probe bank against Ollama models (local and cloud), xAI (Grok), and any OpenAI-compatible API
+- Tests both `/api/chat` and `/api/generate` endpoints for Ollama models to detect weight-level vs. formatting-layer conditioning
+- Supports chat-only probing for native API backends (xAI/Grok) where no generate endpoint exists
 - Measures response length, think block presence, and content differences between mechanism-first and named-actor question variants
 - Supports multi-sweep reliability testing and LLM-as-judge semantic consistency analysis
 - Tracks tool-call capability per model
 - Maintains a model registry (`probes/probe_models.json`) as a single source of truth for empirical findings
+
+---
+
+## Supported backends
+
+| Backend | Models | Key | Notes |
+|---|---|---|---|
+| `ollama` | Any locally-installed Ollama model | — | Requires `ollama serve` |
+| `ollama_cloud` | Cloud-proxied models via ollama.com | `OLLAMA_API_KEY` in `~/.env` | `"cloud"` in model name routes automatically |
+| `xai` | Grok models via xAI API | `XAI_API_KEY` in `~/.env` | Chat-only; no generate endpoint |
+
+Adding a new OpenAI-compatible provider requires one entry in `PROVIDER_CONFIG` in `code/probe_query_openai.py` — no other code changes.
 
 ---
 
@@ -57,8 +70,9 @@ llm-model-update/
 ## Requirements
 
 - Python 3.12+ (via pyenv: `pyenv install 3.12.0`)
-- [Ollama](https://ollama.com) running locally (`ollama serve`)
-- `OLLAMA_API_KEY` in `~/.env` for cloud model access
+- [Ollama](https://ollama.com) running locally (`ollama serve`) — required for Ollama backends
+- `OLLAMA_API_KEY` in `~/.env` for Ollama cloud model access
+- `XAI_API_KEY` in `~/.env` for xAI/Grok model access
 
 **First-time setup** — creates venv at `~/VirtualEnvs/venv-llm-model-update` and runs the test suite:
 
@@ -88,6 +102,7 @@ All scripts are under `code/`. Run from the project root with the venv active.
 | `code/probe_tool_capable.py` | Tool-call capability tester (writes to registry) |
 | `code/probe_coverage.py` | Coverage gap reporter |
 | `code/probe_db.py` | SQLite ingest and summary |
+| `code/probe_query_openai.py` | OpenAI-compatible query layer (xAI/Grok and future providers) |
 | `code/probe_classify.py` | Lexical CCP-voice classifier |
 | `code/probe_classify_with_model.py` | LLM-powered behavioral classification |
 | `code/probe_analysis.py` | Research analysis and findings reports |
