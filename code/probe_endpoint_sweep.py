@@ -864,7 +864,7 @@ def main():
     else:
         ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
         q_tag    = f"_{question_id}" if question_id else ""
-        out_path = SCRIPT_DIR / "results" / "data" / "sweeps" / f"endpoint_sweep{q_tag}_{ts}.json"
+        out_path = ROOT_DIR / "results" / "data" / "sweeps" / f"endpoint_sweep{q_tag}_{ts}.json"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")

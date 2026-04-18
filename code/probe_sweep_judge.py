@@ -16,7 +16,7 @@ What the judge evaluates:
   - Repeatability verdict : CONSISTENT / VARIABLE / INCONSISTENT
   - Quality verdict       : GOOD / ACCEPTABLE / POOR
 
-Output: JSON file saved to results/judge_TIMESTAMP.json
+Output: JSON file saved to results/data/judges/judge_TIMESTAMP.json
 
 Usage:
     python probe_sweep_judge.py --sweep results/data/sweeps/endpoint_sweep_20260404_105505.json
