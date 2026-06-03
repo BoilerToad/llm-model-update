@@ -215,6 +215,203 @@ class TestSyncModels:
         entries = [m for m in result["models"] if m["name"] == "new-model:7b"]
         assert len(entries) == 1
 
+    def test_local_model_ollama_pulled_is_today(self, tmp_path, monkeypatch):
+        """Local synced models get ollama_pulled set to today's date."""
+        from datetime import datetime
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"llama3.2:latest": "abc123"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "llama3.2:latest")
+        today = datetime.now().strftime("%Y-%m-%d")
+        assert entry["ollama_pulled"] == today
+
+    def test_cloud_model_detected_by_name(self, tmp_path, monkeypatch):
+        """Models with 'cloud' in the name get backend=ollama_cloud."""
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"deepseek-r1:cloud": "def456"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "deepseek-r1:cloud")
+        assert entry["backend"] == "ollama_cloud"
+
+    def test_cloud_model_ollama_id_from_list(self, tmp_path, monkeypatch):
+        """Cloud models get ollama_id populated from `ollama list` digest."""
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"deepseek-r1:cloud": "def456abcdef"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "deepseek-r1:cloud")
+        assert entry["ollama_id"] == "def456abcdef"
+
+    def test_cloud_model_ollama_pulled_is_today(self, tmp_path, monkeypatch):
+        """Cloud synced models also get ollama_pulled set to today's date."""
+        from datetime import datetime
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"deepseek-r1:cloud": "def456"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "deepseek-r1:cloud")
+        today = datetime.now().strftime("%Y-%m-%d")
+        assert entry["ollama_pulled"] == today
+
+    def test_cloud_model_has_compare_to_field(self, tmp_path, monkeypatch):
+        """Cloud entries get a compare_to field; local entries do not."""
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"mymodel:cloud": "abc", "mymodel:latest": "def"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        cloud = next(m for m in result["models"] if m["name"] == "mymodel:cloud")
+        local = next(m for m in result["models"] if m["name"] == "mymodel:latest")
+        assert "compare_to" in cloud
+        assert "compare_to" not in local
+
+    def test_local_model_backend_is_ollama(self, tmp_path, monkeypatch):
+        """Non-cloud synced models get backend=ollama."""
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"gemma3:4b": "abc123"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "gemma3:4b")
+        assert entry["backend"] == "ollama"
+
+    def test_added_entry_has_raw_capable_null(self, tmp_path, monkeypatch):
+        """New synced models default to raw_capable=null (not yet evaluated)."""
+        data = _probe_data([])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+        monkeypatch.setattr(ou, "get_installed_models",
+                            lambda: {"gemma3:4b": "abc123"})
+        monkeypatch.setattr(ou, "get_ollama_tags", lambda: [])
+
+        ou.sync_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        entry = next(m for m in result["models"] if m["name"] == "gemma3:4b")
+        assert "raw_capable" in entry
+        assert entry["raw_capable"] is None
+
+
+# ── migrate_models ────────────────────────────────────────────────────────────
+
+class TestMigrateModels:
+    def test_backfills_missing_raw_capable(self, tmp_path, monkeypatch):
+        """Entries without raw_capable get it added as null."""
+        data = _probe_data([_ollama_entry("llama3.2:latest")])
+        # Ensure the field is absent
+        data["models"][0].pop("raw_capable", None)
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+
+        ou.migrate_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        assert "raw_capable" in result["models"][0]
+        assert result["models"][0]["raw_capable"] is None
+
+    def test_does_not_overwrite_existing_values(self, tmp_path, monkeypatch):
+        """Entries that already have raw_capable=false keep their value."""
+        entry = _ollama_entry("llama3.2:latest")
+        entry["raw_capable"] = False
+        data = _probe_data([entry])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+
+        ou.migrate_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        assert result["models"][0]["raw_capable"] is False
+
+    def test_no_changes_when_schema_complete(self, tmp_path, monkeypatch):
+        """If all fields present, version is not bumped."""
+        entry = _ollama_entry("llama3.2:latest")
+        for field in ("tool_capable", "think_blocks", "chat_alignment_strong", "raw_capable"):
+            entry[field] = None
+        data = _probe_data([entry])
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+
+        ou.migrate_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        assert result["_meta"]["version"] == "1.0"
+
+    def test_version_bumped_when_fields_added(self, tmp_path, monkeypatch):
+        """Version increments when at least one entry is updated."""
+        data = _probe_data([_ollama_entry("llama3.2:latest")])
+        for f in ("raw_capable",):
+            data["models"][0].pop(f, None)
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+
+        ou.migrate_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        assert result["_meta"]["version"] != "1.0"
+
+    def test_migrates_multiple_entries(self, tmp_path, monkeypatch):
+        """All entries missing raw_capable are updated in one pass."""
+        entries = [_ollama_entry(f"model-{i}:7b") for i in range(3)]
+        for e in entries:
+            e.pop("raw_capable", None)
+        data = _probe_data(entries)
+        probe_file = tmp_path / "probe_models.json"
+        _write_probe(probe_file, data)
+        monkeypatch.setattr(ou, "PROBE_FILE", probe_file)
+
+        ou.migrate_models(LOG)
+
+        result = json.loads(probe_file.read_text())
+        for m in result["models"]:
+            assert "raw_capable" in m
+
 
 # ── prune_models ───────────────────────────────────────────────────────────────
 

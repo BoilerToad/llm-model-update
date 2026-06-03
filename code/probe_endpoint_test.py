@@ -34,6 +34,15 @@ MODELS_FILE    = ROOT_DIR / "probes" / "probe_models.json"
 TEST_QUESTION  = "What is democracy? Answer in two sentences."
 TEST_PROMPT    = f"Question: {TEST_QUESTION}\n\nAnswer:"
 
+# Import omlx backend functions
+sys.path.insert(0, str(SCRIPT_DIR))
+from probe_query_omlx import (
+    is_omlx_backend,
+    query_chat_omlx,
+    query_generate_omlx,
+    check_server as check_omlx_server,
+)
+
 
 # ── Result dataclass ───────────────────────────────────────────────────────────
 
@@ -150,37 +159,112 @@ def test_generate(model: str, timeout: int, raw: bool = True) -> EndpointResult:
     return result
 
 
+# ── oMLX endpoint testers ──────────────────────────────────────────────────────
+
+def test_chat_omlx(model_entry: dict, timeout: int) -> EndpointResult:
+    """Test oMLX chat endpoint using probe_query_omlx."""
+    result = EndpointResult("omlx/chat")
+    t0 = time.perf_counter()
+    try:
+        response = query_chat_omlx(model_entry, TEST_QUESTION, timeout)
+        result.elapsed_s = round(time.perf_counter() - t0, 3)
+        
+        if "error" in response:
+            result.error = response["error"][:120]
+            return result
+        
+        result.success = True
+        result.response_len = len(response.get("answer", ""))
+        result.eval_count = response.get("eval_count")
+        result.snippet = response.get("answer", "")[:120].replace("\n", " ")
+        
+        # Note if think block was present
+        if response.get("think_block"):
+            result.done_reason = f"complete [think:{len(response['think_block'])}c]"
+        else:
+            result.done_reason = "complete"
+            
+    except Exception as e:
+        result.elapsed_s = round(time.perf_counter() - t0, 3)
+        result.error = str(e)[:120]
+    
+    return result
+
+
+def test_generate_omlx(model_entry: dict, timeout: int) -> EndpointResult:
+    """Test oMLX generate endpoint using probe_query_omlx."""
+    result = EndpointResult("omlx/generate")
+    t0 = time.perf_counter()
+    try:
+        response = query_generate_omlx(model_entry, TEST_PROMPT, timeout)
+        result.elapsed_s = round(time.perf_counter() - t0, 3)
+        
+        if "error" in response:
+            result.error = response["error"][:120]
+            return result
+        
+        result.success = True
+        result.response_len = len(response.get("answer", ""))
+        result.eval_count = response.get("eval_count")
+        result.snippet = response.get("answer", "")[:120].replace("\n", " ")
+        result.done_reason = "complete"
+        
+    except Exception as e:
+        result.elapsed_s = round(time.perf_counter() - t0, 3)
+        result.error = str(e)[:120]
+    
+    return result
+
+
 # ── Per-model test ─────────────────────────────────────────────────────────────
 
 def test_model(
     model: str,
     timeout: int,
     no_generate: bool = False,
+    model_entry: dict | None = None,
 ) -> dict:
     """Run all endpoint tests for a single model. Returns result summary dict."""
     print(f"\n  Model : {model}")
     print(f"  {'─'*60}")
 
     results = {}
+    
+    # Check if this is an omlx backend model
+    is_omlx = model_entry and is_omlx_backend(model_entry)
+    
+    if is_omlx:
+        # oMLX backend tests
+        print(f"  Testing oMLX chat endpoint ...", end=" ", flush=True)
+        chat = test_chat_omlx(model_entry, timeout)
+        results["chat"] = chat
+        print(f"{chat.elapsed_s:.2f}s  {'✓' if chat.success else '✗'}")
+        
+        if not no_generate:
+            print(f"  Testing oMLX generate endpoint ...", end=" ", flush=True)
+            gen = test_generate_omlx(model_entry, timeout)
+            results["generate_plain"] = gen
+            print(f"{gen.elapsed_s:.2f}s  {'✓' if gen.success else '✗'}")
+    else:
+        # Ollama backend tests
+        # Chat
+        print(f"  Testing /api/chat ...", end=" ", flush=True)
+        chat = test_chat(model, timeout)
+        results["chat"] = chat
+        print(f"{chat.elapsed_s:.2f}s  {'✓' if chat.success else '✗'}")
 
-    # Chat
-    print(f"  Testing /api/chat ...", end=" ", flush=True)
-    chat = test_chat(model, timeout)
-    results["chat"] = chat
-    print(f"{chat.elapsed_s:.2f}s  {'✓' if chat.success else '✗'}")
+        if not no_generate:
+            # Generate raw:true
+            print(f"  Testing /api/generate (raw:true) ...", end=" ", flush=True)
+            gen_raw = test_generate(model, timeout, raw=True)
+            results["generate_raw"] = gen_raw
+            print(f"{gen_raw.elapsed_s:.2f}s  {'✓' if gen_raw.success else '✗'}")
 
-    if not no_generate:
-        # Generate raw:true
-        print(f"  Testing /api/generate (raw:true) ...", end=" ", flush=True)
-        gen_raw = test_generate(model, timeout, raw=True)
-        results["generate_raw"] = gen_raw
-        print(f"{gen_raw.elapsed_s:.2f}s  {'✓' if gen_raw.success else '✗'}")
-
-        # Generate raw:false — baseline comparison
-        print(f"  Testing /api/generate (raw:false) ...", end=" ", flush=True)
-        gen_plain = test_generate(model, timeout, raw=False)
-        results["generate_plain"] = gen_plain
-        print(f"{gen_plain.elapsed_s:.2f}s  {'✓' if gen_plain.success else '✗'}")
+            # Generate raw:false — baseline comparison
+            print(f"  Testing /api/generate (raw:false) ...", end=" ", flush=True)
+            gen_plain = test_generate(model, timeout, raw=False)
+            results["generate_plain"] = gen_plain
+            print(f"{gen_plain.elapsed_s:.2f}s  {'✓' if gen_plain.success else '✗'}")
 
     # Print detailed results
     print()
@@ -197,7 +281,7 @@ def test_model(
     print()
     if not no_generate:
         chat_ok      = results["chat"].success
-        gen_raw_ok   = results["generate_raw"].success
+        gen_raw_ok   = results.get("generate_raw", EndpointResult("none")).success
         gen_plain_ok = results["generate_plain"].success
 
         if not chat_ok:
@@ -273,7 +357,11 @@ def main():
                         help="Timeout per request in seconds (default: 120)")
     parser.add_argument("--no-generate", action="store_true",
                         help="Skip generate endpoint tests")
+    parser.add_argument("--models-file", default=str(MODELS_FILE),
+                        help="Path to probe_models.json (default: probes/probe_models.json)")
     args = parser.parse_args()
+
+    models_file = Path(args.models_file)
 
     if not args.model and not args.all_enabled:
         parser.error("Specify --model MODEL or --all-enabled")
@@ -291,12 +379,15 @@ def main():
     print(f"  Question  : {TEST_QUESTION}")
     print(f"  Started   : {datetime.now():%Y-%m-%d %H:%M:%S}")
 
+    # Load registry data
+    data = json.loads(models_file.read_text())
+    registry = {m["name"]: m for m in data["models"]}
+    
     # Build model list
     models = []
     if args.model:
         models = [args.model]
     else:
-        data = json.loads(MODELS_FILE.read_text())
         models = [
             m["name"] for m in data["models"]
             if m.get("enabled", True)
@@ -307,18 +398,29 @@ def main():
     all_results = {}
 
     for model in models:
-        # Quick availability check
-        try:
-            tags = requests.get(f"{OLLAMA_LOCAL}/api/tags", timeout=5).json()
-            available = [m["name"] for m in tags.get("models", [])]
-            if model not in available:
+        model_entry = registry.get(model)
+        
+        # Check if this is an omlx backend model
+        if model_entry and is_omlx_backend(model_entry):
+            # oMLX backend — check server connectivity
+            ok, detail = check_omlx_server(model_entry)
+            if not ok:
                 print(f"\n  Model : {model}")
-                print(f"  ✗ Not available in Ollama — skipping")
+                print(f"  ✗ oMLX server not available — {detail}")
                 continue
-        except Exception:
-            pass
+        else:
+            # Ollama backend — quick availability check
+            try:
+                tags = requests.get(f"{OLLAMA_LOCAL}/api/tags", timeout=5).json()
+                available = [m["name"] for m in tags.get("models", [])]
+                if model not in available:
+                    print(f"\n  Model : {model}")
+                    print(f"  ✗ Not available in Ollama — skipping")
+                    continue
+            except Exception:
+                pass
 
-        all_results[model] = test_model(model, args.timeout, args.no_generate)
+        all_results[model] = test_model(model, args.timeout, args.no_generate, model_entry)
 
     # Summary table
     print(f"\n{'═'*65}")
@@ -330,7 +432,7 @@ def main():
         chat_s = (f"{results['chat'].elapsed_s:.1f}s"
                   if results['chat'].success
                   else f"FAIL")
-        gen_r  = ("—" if args.no_generate else
+        gen_r  = ("—" if args.no_generate or "generate_raw" not in results else
                   f"{results['generate_raw'].elapsed_s:.1f}s"
                   if results['generate_raw'].success
                   else "FAIL/TO")

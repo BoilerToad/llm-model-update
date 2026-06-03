@@ -47,9 +47,15 @@ from probe_query_openai import (
     query_chat_openai,
     check_api_key as check_openai_api_key,
 )
+from probe_query_omlx import (
+    is_omlx_backend,
+    query_chat_omlx,
+    check_server as check_omlx_server,
+)
 
 OLLAMA_LOCAL   = "http://localhost:11434"
 OLLAMA_CLOUD   = "https://ollama.com"
+OMLX_URL       = "http://localhost:8000/v1"
 SCRIPT_DIR     = Path(__file__).parent
 ROOT_DIR       = SCRIPT_DIR.parent
 MODELS_FILE    = ROOT_DIR / "probes" / "probe_models.json"
@@ -262,10 +268,44 @@ def run_tool_capable(
     """
     Send one chat request with a tools schema and classify the response.
     Routes xAI/OpenAI-backend models through probe_query_openai.
+    Routes oMLX-backend models through probe_query_omlx.
     Routes Ollama cloud models to OLLAMA_CLOUD with Bearer auth.
     """
     result  = ToolTestResult(model)
     entry   = (registry or {}).get(model, {"name": model, "backend": "ollama"})
+
+    # ── oMLX backend ──────────────────────────────────────────────────────────
+    if is_omlx_backend(entry):
+        ok, detail = check_omlx_server(entry)
+        if not ok:
+            result.error = detail
+            return result
+        omlx = query_chat_omlx(entry, question, timeout, tools=[WEB_FETCH_TOOL])
+        if not omlx["success"]:
+            result.error = omlx.get("error", "unknown error")
+            result.elapsed_s = omlx["elapsed_s"]
+            return result
+        result.elapsed_s = omlx["elapsed_s"]
+        # oMLX returns tool_calls in OpenAI format
+        tool_calls_raw = omlx.get("tool_calls", [])
+        if tool_calls_raw:
+            fn = tool_calls_raw[0].get("function", {})
+            result.classification = TOOL_CALL
+            result.tool_name      = fn.get("name")
+            result.tool_args      = fn.get("arguments", {})
+        else:
+            content = omlx.get("answer", "").strip()
+            lower   = content.lower()
+            if any(s in lower for s in REFUSAL_SIGNALS):
+                result.classification = REFUSED
+            elif content:
+                result.classification = TEXT_ONLY
+            result.response_len = len(content)
+            result.snippet      = content[:120].replace("\n", " ")
+        think_block = omlx.get("think_block", "")
+        if think_block:
+            result.think_len = len(think_block)
+        return result
 
     # ── xAI / OpenAI-compatible backend ──────────────────────────────────────
     if is_openai_backend(entry):
@@ -398,15 +438,24 @@ def main() -> None:
             if entry.get("enabled", True)
         ]
 
-    # Check Ollama is reachable — local for local models, cloud for cloud-only runs
-    check_url = OLLAMA_CLOUD if (models and all(is_cloud(m) for m in models)) else OLLAMA_LOCAL
-    try:
-        r = requests.get(f"{check_url}/api/version", headers=auth_headers(check_url), timeout=5)
-        version = r.json().get("version", "?")
-        print(f"\n  Ollama v{version} at {check_url}")
-    except Exception as e:
-        print(f"✗ Cannot reach Ollama: {e}")
-        sys.exit(1)
+    # Check connectivity — skip if all models are omlx
+    registry = load_registry()
+    all_omlx = models and all(
+        registry.get(m, {}).get("backend") == "omlx" for m in models
+    )
+    
+    if not all_omlx:
+        # Check Ollama is reachable — local for local models, cloud for cloud-only runs
+        check_url = OLLAMA_CLOUD if (models and all(is_cloud(m) for m in models)) else OLLAMA_LOCAL
+        try:
+            r = requests.get(f"{check_url}/api/version", headers=auth_headers(check_url), timeout=5)
+            version = r.json().get("version", "?")
+            print(f"\n  Ollama v{version} at {check_url}")
+        except Exception as e:
+            print(f"✗ Cannot reach Ollama: {e}")
+            sys.exit(1)
+    else:
+        print(f"\n  Testing oMLX backend models")
 
     print(f"  Timeout     : {args.timeout}s")
     print(f"  Question ID : {args.question_id}")

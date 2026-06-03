@@ -57,13 +57,15 @@ SKIP_FAMILIES = {"bert", "clip", "mllama"}
 SKIP_NAME_SUBSTRINGS = {"embed", "vision", "llava"}
 
 FAMILY_ORIGINS = {
-    "llama":   "US/Meta",    "gemma":  "US/Google",  "gemma2": "US/Google",
-    "gemma3":  "US/Google",  "gemini": "US/Google",  "openai": "US/OpenAI",
-    "gptoss":  "US/OpenAI",  "nvidia": "US/NVIDIA",  "nemotron_h_moe": "US/NVIDIA",
-    "deepseek":"China/DeepSeek", "qwen2":"China/Alibaba", "qwen35":"China/Alibaba",
-    "qwen":    "China/Alibaba", "glm":  "China/ZHIPU", "glm4moelite":"China/ZHIPU",
-    "mistral": "France/Mistral", "mistral3":"France/Mistral",
-    "falcon":  "UAE/TII",    "allam": "Saudi/SDAIA",
+    "llama":        "US/Meta",      "gemma":   "US/Google",   "gemma2": "US/Google",
+    "gemma3":       "US/Google",    "gemma4":  "US/Google",   "gemini": "US/Google",
+    "openai":       "US/OpenAI",    "gptoss":  "US/OpenAI",
+    "nvidia":       "US/NVIDIA",    "nemotron": "US/NVIDIA",  "nemotron_h_moe": "US/NVIDIA",
+    "deepseek":     "China/DeepSeek",
+    "qwen2":        "China/Alibaba", "qwen35": "China/Alibaba", "qwen": "China/Alibaba",
+    "glm":          "China/ZHIPU",  "glm4moelite": "China/ZHIPU",
+    "mistral":      "France/Mistral", "mistral3": "France/Mistral",
+    "falcon":       "UAE/TII",      "allam":   "Saudi/SDAIA",
 }
 
 
@@ -199,9 +201,9 @@ def run_update(mode: str, single: Optional[str], logger, settings: dict):
 
 
 def list_models(logger):
-    models    = load_probe_models()
-    installed = get_installed_models()
-    registry  = {m["name"]: m for m in models}
+    all_models = load_probe_data()["models"]
+    registry   = {m["name"]: m for m in all_models}
+    installed  = get_installed_models()
 
     logger.info(f"\n{'MODEL':<45} {'UPDATE':<8} {'INSTALLED':<12}  ORIGIN")
     logger.info("─" * 90)
@@ -266,15 +268,28 @@ def sync_models(logger):
                 if key in name.lower():
                     geo = origin
                     break
+        is_cloud = "cloud" in name.lower()
         entry = {
-            "name": name, "backend": "ollama", "size_gb": size_gb,
-            "family": family, "geopolitical_origin": geo,
-            "tool_capable": None, "think_blocks": None, "chat_alignment_strong": None,
-            "update": "check", "enabled": True,
+            "name":                 name,
+            "ollama_id":            installed.get(name, "")[:12],
+            "ollama_pulled":        datetime.now().strftime("%Y-%m-%d"),
+            "backend":              "ollama_cloud" if is_cloud else "ollama",
+            "size_gb":              0.0 if is_cloud else size_gb,
+            "family":               family,
+            "geopolitical_origin":  geo,
+            "tool_capable":         None,
+            "think_blocks":         None,
+            "chat_alignment_strong": None,
+            "raw_capable":          None,
+            "update":               "check",
+            "enabled":              True,
+            "compare_to":           None if not is_cloud else name.replace(":cloud", ":latest"),
             "notes": (f"Added by --sync {datetime.now():%Y-%m-%d}. "
                       "Fill in: geopolitical_origin, tool_capable, think_blocks, "
                       "chat_alignment_strong."),
         }
+        if not is_cloud:
+            del entry["compare_to"]
         data["models"].insert(insert_at, entry)
         insert_at += 1
         added.append(name)
@@ -319,6 +334,50 @@ def prune_models(logger):
         logger.info(f"  {C['red']}-{C['reset']} {name}  (enabled → false)")
 
 
+# Fields that every probe entry should have, with their default values.
+# Add new fields here as the schema evolves — --migrate will backfill them.
+SCHEMA_DEFAULTS: dict = {
+    "tool_capable":          None,
+    "think_blocks":          None,
+    "chat_alignment_strong": None,
+    "raw_capable":           None,
+}
+
+
+def migrate_models(logger):
+    """Backfill any missing schema fields onto existing entries. Never overwrites."""
+    data    = load_probe_data()
+    updated = []
+
+    for m in data["models"]:
+        added = []
+        for field, default in SCHEMA_DEFAULTS.items():
+            if field not in m:
+                m[field] = default
+                added.append(field)
+        if added:
+            updated.append((m["name"], added))
+
+    if not updated:
+        logger.info(f"{C['green']}✓ All entries already have current schema fields{C['reset']}")
+        return
+
+    old_ver = data["_meta"]["version"]
+    parts   = old_ver.split(".")
+    new_ver = f"{parts[0]}.{int(parts[1]) + 1}"
+    data["_meta"]["version"] = new_ver
+    data["_meta"]["changelog"][new_ver] = (
+        f"--migrate {datetime.now():%Y-%m-%d}: backfilled "
+        f"{', '.join(SCHEMA_DEFAULTS)} on {len(updated)} entries"
+    )
+    save_probe_data(data)
+
+    logger.info(f"{C['bold']}Migrated {len(updated)} entry(s):{C['reset']}")
+    for name, fields in updated:
+        logger.info(f"  {C['cyan']}~{C['reset']} {name}  (+{', '.join(fields)})")
+    logger.info(f"\n  {C['yellow']}Version bumped {old_ver} → {new_ver}{C['reset']}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -329,8 +388,10 @@ def main():
     parser.add_argument("--list",  action="store_true")
     parser.add_argument("--sync",  action="store_true",
                         help="Add installed models missing from probe_models.json")
-    parser.add_argument("--prune", action="store_true",
+    parser.add_argument("--prune",   action="store_true",
                         help="Disable probe entries no longer installed")
+    parser.add_argument("--migrate", action="store_true",
+                        help="Backfill missing schema fields on existing entries")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -349,6 +410,8 @@ def main():
         sync_models(logger)
     elif args.prune:
         prune_models(logger)
+    elif args.migrate:
+        migrate_models(logger)
     else:
         run_update(mode=args.mode, single=args.model, logger=logger, settings=settings)
 

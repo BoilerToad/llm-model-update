@@ -65,8 +65,17 @@ OLLAMA_LOCAL = "http://localhost:11434"
 OLLAMA_CLOUD = "https://ollama.com"
 
 
+LLAMACPP_DEFAULT = "http://127.0.0.1:8080"
+
+
 def llm_url_for(model_def: dict) -> str:
+    if model_def.get("backend") == "llamacpp":
+        return model_def.get("llamacpp_url", LLAMACPP_DEFAULT)
     return OLLAMA_CLOUD if model_def.get("cloud") else OLLAMA_LOCAL
+
+
+def is_llamacpp(model_def: dict) -> bool:
+    return model_def.get("backend") == "llamacpp"
 
 
 def auth_headers(llm_url: str) -> dict:
@@ -75,9 +84,9 @@ def auth_headers(llm_url: str) -> dict:
         if api_key:
             return {"Authorization": f"Bearer {api_key}"}
     return {}
-DEFAULT_QUESTIONS_FILE = Path(__file__).parent / "probes" / "questions.json"
-DEFAULT_MODELS_FILE    = Path(__file__).parent / "probes" / "probe_models.json"
-DEFAULT_OUTPUT_DIR     = Path(__file__).parent / "results" / "probes"
+DEFAULT_QUESTIONS_FILE = Path(__file__).parent.parent / "probes" / "questions.json"
+DEFAULT_MODELS_FILE    = Path(__file__).parent.parent / "probes" / "probe_models.json"
+DEFAULT_OUTPUT_DIR     = Path(__file__).parent.parent / "results" / "probes"
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -130,50 +139,94 @@ def filter_models(
 # ── Ollama tool-call API ──────────────────────────────────────────────────────
 
 def query_with_tools(model: str, question: str, tools: list[dict], timeout: int,
-                     llm_url: str = OLLAMA_LOCAL) -> dict:
-    payload = {
-        "model": model,
-        "stream": False,
-        "messages": [{"role": "user", "content": question}],
-        "tools": tools,
-    }
+                     llm_url: str = OLLAMA_LOCAL, use_llamacpp: bool = False) -> dict:
     t0 = time.time()
     try:
-        r = requests.post(f"{llm_url}/api/chat", json=payload,
-                          headers=auth_headers(llm_url), timeout=timeout)
-        elapsed = round(time.time() - t0, 2)
-        r.raise_for_status()
-        data = r.json()
-        msg = data.get("message", {})
-        return {
-            "success": True,
-            "elapsed_s": elapsed,
-            "content": msg.get("content", ""),
-            "tool_calls": msg.get("tool_calls", []),
-            "eval_count": data.get("eval_count"),
-        }
+        if use_llamacpp:
+            # OpenAI-compatible endpoint used by llama-server
+            payload = {
+                "model": model,
+                "stream": False,
+                "messages": [{"role": "user", "content": question}],
+                "tools": tools,
+            }
+            r = requests.post(f"{llm_url}/v1/chat/completions", json=payload,
+                              timeout=timeout)
+            elapsed = round(time.time() - t0, 2)
+            r.raise_for_status()
+            data = r.json()
+            msg = data["choices"][0]["message"]
+            # Normalize tool_calls to Ollama shape: [{"function": {"name": ..., "arguments": ...}}]
+            raw_tcs = msg.get("tool_calls") or []
+            tool_calls = [
+                {"function": {"name": tc["function"]["name"],
+                              "arguments": tc["function"]["arguments"]}}
+                for tc in raw_tcs
+            ]
+            return {
+                "success": True,
+                "elapsed_s": elapsed,
+                "content": msg.get("content") or "",
+                "tool_calls": tool_calls,
+                "eval_count": data.get("usage", {}).get("completion_tokens"),
+            }
+        else:
+            payload = {
+                "model": model,
+                "stream": False,
+                "messages": [{"role": "user", "content": question}],
+                "tools": tools,
+            }
+            r = requests.post(f"{llm_url}/api/chat", json=payload,
+                              headers=auth_headers(llm_url), timeout=timeout)
+            elapsed = round(time.time() - t0, 2)
+            r.raise_for_status()
+            data = r.json()
+            msg = data.get("message", {})
+            return {
+                "success": True,
+                "elapsed_s": elapsed,
+                "content": msg.get("content", ""),
+                "tool_calls": msg.get("tool_calls", []),
+                "eval_count": data.get("eval_count"),
+            }
     except Exception as e:
         return {"success": False, "error": str(e),
                 "elapsed_s": round(time.time() - t0, 2)}
 
 
 def submit_tool_result(model: str, messages: list[dict], timeout: int,
-                       llm_url: str = OLLAMA_LOCAL) -> dict:
-    payload = {"model": model, "stream": False, "messages": messages}
+                       llm_url: str = OLLAMA_LOCAL, use_llamacpp: bool = False) -> dict:
     t0 = time.time()
     try:
-        r = requests.post(f"{llm_url}/api/chat", json=payload,
-                          headers=auth_headers(llm_url), timeout=timeout)
-        elapsed = round(time.time() - t0, 2)
-        r.raise_for_status()
-        data = r.json()
-        msg = data.get("message", {})
-        return {
-            "success": True,
-            "elapsed_s": elapsed,
-            "content": msg.get("content", ""),
-            "tool_calls": msg.get("tool_calls", []),
-        }
+        if use_llamacpp:
+            payload = {"model": model, "stream": False, "messages": messages}
+            r = requests.post(f"{llm_url}/v1/chat/completions", json=payload,
+                              timeout=timeout)
+            elapsed = round(time.time() - t0, 2)
+            r.raise_for_status()
+            data = r.json()
+            msg = data["choices"][0]["message"]
+            return {
+                "success": True,
+                "elapsed_s": elapsed,
+                "content": msg.get("content") or "",
+                "tool_calls": msg.get("tool_calls") or [],
+            }
+        else:
+            payload = {"model": model, "stream": False, "messages": messages}
+            r = requests.post(f"{llm_url}/api/chat", json=payload,
+                              headers=auth_headers(llm_url), timeout=timeout)
+            elapsed = round(time.time() - t0, 2)
+            r.raise_for_status()
+            data = r.json()
+            msg = data.get("message", {})
+            return {
+                "success": True,
+                "elapsed_s": elapsed,
+                "content": msg.get("content", ""),
+                "tool_calls": msg.get("tool_calls", []),
+            }
     except Exception as e:
         return {"success": False, "error": str(e),
                 "elapsed_s": round(time.time() - t0, 2)}
@@ -181,12 +234,21 @@ def submit_tool_result(model: str, messages: list[dict], timeout: int,
 
 # ── mcp-relay ─────────────────────────────────────────────────────────────────
 
-def build_relay(relay_config_path: str | None) -> "Relay":
+def build_relay(
+    relay_config_path: str | None,
+    ignore_robots: bool = False,
+    user_agent: str | None = None,
+) -> "Relay":
     if relay_config_path and Path(relay_config_path).exists():
         config = RelayConfig.from_file(relay_config_path)
     else:
+        fetch_args = ["mcp-server-fetch"]
+        if ignore_robots:
+            fetch_args.append("--ignore-robots-txt")
+        if user_agent:
+            fetch_args += ["--user-agent", user_agent]
         config = RelayConfig(
-            upstream=UpstreamConfig(command="uvx", args=["mcp-server-fetch"]),
+            upstream=UpstreamConfig(command="uvx", args=fetch_args),
             storage=StorageConfig(path="~/.mcp-relay/probe_relay.db"),
             logging=LoggingConfig(output="~/.mcp-relay/probe_relay.log"),
             policy=PolicyConfigSection(enabled=True, ssrf_protection=True),
@@ -246,6 +308,7 @@ async def probe_model(
     output_path: Path,
     all_results: list,
     llm_url: str = OLLAMA_LOCAL,
+    use_llamacpp: bool = False,
 ) -> dict:
 
     try:
@@ -272,7 +335,7 @@ async def probe_model(
         qid = q["id"]
         print(f"    {qid} ", end="", flush=True)
 
-        first = query_with_tools(model, q["text"], ollama_tools, timeout, llm_url=llm_url)
+        first = query_with_tools(model, q["text"], ollama_tools, timeout, llm_url=llm_url, use_llamacpp=use_llamacpp)
         if not first["success"]:
             model_result["responses"][qid] = {
                 "success": False, "error": first.get("error")
@@ -316,7 +379,7 @@ async def probe_model(
             })
 
         if tool_calls:
-            final_resp = submit_tool_result(model, messages, timeout, llm_url=llm_url)
+            final_resp = submit_tool_result(model, messages, timeout, llm_url=llm_url, use_llamacpp=use_llamacpp)
             if final_resp["success"]:
                 final_answer = final_resp.get("content", final_answer)
 
@@ -509,13 +572,23 @@ async def main_async(args):
     print(f"  Output    : {output_dir}")
     print(f"{'─'*65}\n")
 
-    relay = build_relay(args.relay_config)
+    relay = build_relay(
+        args.relay_config,
+        ignore_robots=args.ignore_robots_txt,
+        user_agent=args.user_agent,
+    )
     all_results = []
 
     for i, model in enumerate(model_names, 1):
         model_def = model_lookup.get(model, {"cloud": "cloud" in model.lower()})
         llm_url   = llm_url_for(model_def)
-        endpoint_label = "cloud" if llm_url == OLLAMA_CLOUD else "local"
+        _is_llamacpp = is_llamacpp(model_def)
+        if _is_llamacpp:
+            endpoint_label = "llamacpp"
+        elif llm_url == OLLAMA_CLOUD:
+            endpoint_label = "cloud"
+        else:
+            endpoint_label = "local"
         print(f"[{i}/{len(model_names)}] {model}  [{endpoint_label}]")
         await probe_model(
             model=model,
@@ -525,6 +598,7 @@ async def main_async(args):
             output_path=json_path,
             all_results=all_results,
             llm_url=llm_url,
+            use_llamacpp=_is_llamacpp,
         )
         write_markdown(all_results, questions, md_path)
         print(f"  → saved\n")
@@ -558,9 +632,14 @@ def main():
     cfg.add_argument("--questions-file", default=str(DEFAULT_QUESTIONS_FILE))
     cfg.add_argument("--models-file", default=str(DEFAULT_MODELS_FILE))
     cfg.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    cfg.add_argument("--timeout", default=300, type=int)
+    cfg.add_argument("--timeout", default=600, type=int,
+                     help="Per-LLM-request timeout in seconds (default: 600)")
     cfg.add_argument("--relay-config", default=None)
     cfg.add_argument("--label", default="")
+    cfg.add_argument("--ignore-robots-txt", action="store_true",
+                     help="Pass --ignore-robots-txt to mcp-server-fetch")
+    cfg.add_argument("--user-agent", default=None,
+                     help="Custom User-Agent for mcp-server-fetch requests")
 
     info = parser.add_argument_group("information")
     info.add_argument("--list-questions", action="store_true")

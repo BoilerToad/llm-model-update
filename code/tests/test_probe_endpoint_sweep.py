@@ -10,6 +10,7 @@ Run:  pytest tests/test_probe_endpoint_sweep.py -v
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import tempfile
@@ -31,6 +32,7 @@ from probe_endpoint_sweep import (
     pairwise_similarities,
     load_questions,
     load_question_by_id,
+    main,
     DEFAULT_QUESTION,
     DEFAULT_PROMPT,
     FAIL_RATE_THRESHOLD,
@@ -650,11 +652,11 @@ class TestPostEvaluate(unittest.TestCase):
         self.registry_patch = patch(
             "probe_endpoint_sweep.load_registry",
             return_value={
-                "model-a:7b":  {"enabled": True, "notes": ""},
-                "model-b:7b":  {"enabled": True, "notes": ""},
-                "model-c:7b":  {"enabled": True, "notes": ""},
-                "gemma4:26b":  {"enabled": True, "notes": ""},
-                "qwen3.5:35b": {"enabled": True, "notes": ""},
+                "model-a:7b":  {"enabled": True, "notes": "", "raw_capable": None},
+                "model-b:7b":  {"enabled": True, "notes": "", "raw_capable": None},
+                "model-c:7b":  {"enabled": True, "notes": "", "raw_capable": None},
+                "gemma4:26b":  {"enabled": True, "notes": "", "raw_capable": None},
+                "qwen3.5:35b": {"enabled": True, "notes": "", "raw_capable": None},
             }
         )
         self.registry_patch.start()
@@ -667,17 +669,17 @@ class TestPostEvaluate(unittest.TestCase):
         recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
         self.assertEqual(recs, [])
 
-    def test_consistent_raw_true_failures_recommends_needs_raw_false(self):
+    def test_consistent_raw_true_failures_recommends_raw_capable_false(self):
         stats = {
             "gemma4:26b": _make_stats("gemma4:26b", n=11, gen_raw_fail=11, gen_plain_fail=0)
         }
         recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
-        notes_recs = [r for r in recs if r.field == "notes"]
-        self.assertTrue(len(notes_recs) > 0)
-        self.assertIn("needs_raw_false", notes_recs[0].suggested)
-        self.assertEqual(notes_recs[0].confidence, "HIGH")
+        raw_recs = [r for r in recs if r.field == "raw_capable"]
+        self.assertTrue(len(raw_recs) > 0)
+        self.assertIs(raw_recs[0].suggested, False)
+        self.assertEqual(raw_recs[0].confidence, "HIGH")
 
-    def test_shallow_raw_true_recommends_needs_raw_false(self):
+    def test_shallow_raw_true_recommends_raw_capable_false(self):
         stats = {
             "qwen3.5:35b": _make_stats(
                 "qwen3.5:35b", n=11,
@@ -685,9 +687,9 @@ class TestPostEvaluate(unittest.TestCase):
             )
         }
         recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
-        self.assertTrue(any("needs_raw_false" in r.suggested for r in recs))
+        self.assertTrue(any(r.field == "raw_capable" and r.suggested is False for r in recs))
 
-    def test_high_token_ratio_recommends_needs_raw_false(self):
+    def test_high_token_ratio_recommends_raw_capable_false(self):
         stats = {
             "model-b:7b": _make_stats(
                 "model-b:7b", n=11,
@@ -695,9 +697,9 @@ class TestPostEvaluate(unittest.TestCase):
             )
         }
         recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
-        self.assertTrue(any("needs_raw_false" in r.suggested for r in recs))
+        self.assertTrue(any(r.field == "raw_capable" and r.suggested is False for r in recs))
 
-    def test_contamination_recommends_needs_raw_false(self):
+    def test_contamination_recommends_raw_capable_false(self):
         stats = {
             "model-c:7b": _make_stats(
                 "model-c:7b", n=11, gen_raw_contaminated=8,
@@ -705,7 +707,7 @@ class TestPostEvaluate(unittest.TestCase):
             )
         }
         recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
-        self.assertTrue(any("needs_raw_false" in r.suggested for r in recs))
+        self.assertTrue(any(r.field == "raw_capable" and r.suggested is False for r in recs))
 
     def test_intermittent_raw_failures_medium_confidence(self):
         stats = {
@@ -758,18 +760,33 @@ class TestPostEvaluate(unittest.TestCase):
         recs = post_evaluate(stats, no_generate=True, n_sweeps=11)
         self.assertFalse(any("raw_false" in r.suggested for r in recs))
 
-    def test_already_flagged_model_not_double_recommended(self):
+    def test_already_set_raw_capable_false_not_double_recommended(self):
+        """If raw_capable is already False in registry, no further recommendation."""
         self.registry_patch.stop()
         with patch("probe_endpoint_sweep.load_registry", return_value={
-            "model-a:7b": {"enabled": True, "notes": "needs_raw_false confirmed"},
+            "model-a:7b": {"enabled": True, "notes": "", "raw_capable": False},
         }):
             stats = {
                 "model-a:7b": _make_stats("model-a:7b", n=11, gen_raw_fail=11, gen_plain_fail=0)
             }
             recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
-            notes_recs = [r for r in recs if r.field == "notes"
-                          and "needs_raw_false" in r.suggested]
-            self.assertEqual(len(notes_recs), 0)
+            raw_recs = [r for r in recs if r.field == "raw_capable"]
+            self.assertEqual(len(raw_recs), 0)
+        self.registry_patch.start()
+
+    def test_raw_capable_none_gets_recommendation_on_failure(self):
+        """raw_capable=null (unknown) should trigger recommendation when raw:T fails."""
+        self.registry_patch.stop()
+        with patch("probe_endpoint_sweep.load_registry", return_value={
+            "model-a:7b": {"enabled": True, "notes": "", "raw_capable": None},
+        }):
+            stats = {
+                "model-a:7b": _make_stats("model-a:7b", n=11, gen_raw_fail=11, gen_plain_fail=0)
+            }
+            recs = post_evaluate(stats, no_generate=False, n_sweeps=11)
+            raw_recs = [r for r in recs if r.field == "raw_capable"]
+            self.assertTrue(len(raw_recs) > 0)
+            self.assertIs(raw_recs[0].suggested, False)
         self.registry_patch.start()
 
     def test_recommendation_serializable(self):
@@ -803,6 +820,231 @@ class TestRecommendation(unittest.TestCase):
     def test_to_dict_serializable(self):
         rec = Recommendation("m", "enabled", True, False, "test reason", "MEDIUM")
         json.dumps(rec.to_dict())
+
+
+# ── TestMain — CLI flag coverage ──────────────────────────────────────────────
+
+class TestMain(unittest.TestCase):
+    """
+    Every flag exposed by main() must have at least one test here.
+    Tests mock all external I/O so no Ollama instance is required.
+
+    Flags covered:
+      --sweeps, --model, --timeout, --no-generate, --out, --pause (implicit),
+      --warmup / --no-warmup, --questions, --list-questions
+    """
+
+    TEST_MODEL = "llama3.2:latest"
+
+    def _sweep_result(self):
+        """Minimal valid single-model sweep result dict."""
+        return {
+            self.TEST_MODEL: {
+                "chat": {
+                    "success": True, "elapsed_s": 1.0, "eval_count": 100,
+                    "response_len": 50, "think_len": 0,
+                    "response_text": "democracy is a system of government",
+                },
+                "gen_raw": {
+                    "success": True, "elapsed_s": 1.0, "eval_count": 100,
+                    "response_len": 50, "raw": True, "contaminated": False,
+                    "response_text": "democracy is a form of government",
+                },
+                "gen_plain": {
+                    "success": True, "elapsed_s": 1.0, "eval_count": 100,
+                    "response_len": 50, "raw": False, "contaminated": False,
+                    "response_text": "democracy involves elections and rights",
+                },
+            }
+        }
+
+    @contextlib.contextmanager
+    def _patched_main(self, tmp_path, extra_argv=(), *, sweeps=1, no_warmup=True):
+        """
+        Patch all external dependencies and route output to tmp_path.
+        ROOT_DIR is re-pointed to tmp_path so auto-generated output files
+        land under tmp_path/results/data/sweeps/ rather than the real tree.
+
+        Yields (mock_run_sweep, mock_warmup_model).
+        """
+        models_file = tmp_path / "models.json"
+        models_file.write_text(json.dumps({"models": [
+            {"name": self.TEST_MODEL, "backend": "ollama",
+             "enabled": True, "family": "llama", "raw_capable": None},
+        ]}))
+        questions_file = tmp_path / "questions.json"
+        questions_file.write_text(json.dumps(SAMPLE_QUESTIONS_DATA))
+
+        mock_sweep  = MagicMock(return_value=self._sweep_result())
+        mock_warmup = MagicMock(return_value=True)
+
+        argv = (["prog", f"--sweeps={sweeps}"]
+                + (["--no-warmup"] if no_warmup else [])
+                + list(extra_argv))
+
+        with patch("sys.argv", argv), \
+             patch("probe_endpoint_sweep.MODELS_FILE",    models_file), \
+             patch("probe_endpoint_sweep.QUESTIONS_FILE", questions_file), \
+             patch("probe_endpoint_sweep.ROOT_DIR",       tmp_path), \
+             patch("probe_endpoint_sweep.get_available_models",
+                   return_value=[self.TEST_MODEL]), \
+             patch("probe_endpoint_sweep.get_ollama_version", return_value="0.6.0"), \
+             patch("probe_endpoint_sweep.run_sweep",      mock_sweep), \
+             patch("probe_endpoint_sweep.warmup_model",   mock_warmup), \
+             patch("probe_endpoint_sweep.load_registry",  return_value={
+                 self.TEST_MODEL: {"enabled": True, "notes": "", "raw_capable": None},
+             }):
+            yield mock_sweep, mock_warmup
+
+    # ── --list-questions ──────────────────────────────────────────────────────
+
+    def test_list_questions_prints_and_returns(self):
+        """--list-questions prints available questions and returns cleanly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            questions_file = Path(tmpdir) / "questions.json"
+            questions_file.write_text(json.dumps(SAMPLE_QUESTIONS_DATA))
+            with patch("sys.argv", ["prog", "--list-questions"]), \
+                 patch("probe_endpoint_sweep.QUESTIONS_FILE", questions_file):
+                main()   # must return without raising
+
+    # ── --questions ───────────────────────────────────────────────────────────
+
+    def test_unknown_question_id_exits_nonzero(self):
+        """--questions with an unknown ID must exit with a non-zero code."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), ["--questions", "QBAD"]):
+                with self.assertRaises(SystemExit) as cm:
+                    main()
+        self.assertNotEqual(cm.exception.code, 0)
+
+    def test_no_questions_flag_uses_default_question(self):
+        """Omitting --questions passes DEFAULT_QUESTION to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir)) as (mock_sweep, _):
+                main()
+        self.assertEqual(mock_sweep.call_args.kwargs["question"], DEFAULT_QUESTION)
+
+    def test_single_question_id_sets_correct_text(self):
+        """--questions Q01 passes Q01's text to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), ["--questions", "Q01"]) as (mock_sweep, _):
+                main()
+        self.assertIn("authoritarianism",
+                      mock_sweep.call_args.kwargs["question"].lower())
+
+    def test_multiple_questions_calls_sweep_per_question(self):
+        """--questions Q01 Q10b with --sweeps 1 → run_sweep called twice."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(
+                    Path(tmpdir), ["--questions", "Q01", "Q10b"]) as (mock_sweep, _):
+                main()
+        self.assertEqual(mock_sweep.call_count, 2)
+
+    def test_multiple_questions_saves_separate_output_files(self):
+        """--questions Q01 Q10b → two distinct output files, one per question."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with self._patched_main(tmp_path, ["--questions", "Q01", "Q10b"]):
+                main()
+            sweep_dir = tmp_path / "results" / "data" / "sweeps"
+            files = list(sweep_dir.glob("endpoint_sweep_*.json"))
+            self.assertEqual(len(files), 2)
+
+    # ── --model ───────────────────────────────────────────────────────────────
+
+    def test_unknown_model_exits_nonzero(self):
+        """--model with a name absent from Ollama must exit non-zero."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), ["--model", "nonexistent:99b"]):
+                with self.assertRaises(SystemExit) as cm:
+                    main()
+        self.assertNotEqual(cm.exception.code, 0)
+
+    def test_model_flag_filters_to_single_model(self):
+        """--model X → only X in the models list forwarded to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(
+                    Path(tmpdir), ["--model", self.TEST_MODEL]) as (mock_sweep, _):
+                main()
+        self.assertEqual(mock_sweep.call_args.kwargs["models"], [self.TEST_MODEL])
+
+    # ── --no-generate ─────────────────────────────────────────────────────────
+
+    def test_no_generate_flag_passed_to_sweep(self):
+        """--no-generate → no_generate=True forwarded to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(
+                    Path(tmpdir), ["--no-generate"]) as (mock_sweep, _):
+                main()
+        self.assertTrue(mock_sweep.call_args.kwargs["no_generate"])
+
+    def test_generate_enabled_by_default(self):
+        """Without --no-generate, no_generate=False forwarded to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir)) as (mock_sweep, _):
+                main()
+        self.assertFalse(mock_sweep.call_args.kwargs["no_generate"])
+
+    # ── --sweeps ──────────────────────────────────────────────────────────────
+
+    def test_sweeps_count_controls_run_sweep_calls(self):
+        """--sweeps N → run_sweep called exactly N times for one question."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), sweeps=3) as (mock_sweep, _):
+                main()
+        self.assertEqual(mock_sweep.call_count, 3)
+
+    # ── --timeout ─────────────────────────────────────────────────────────────
+
+    def test_timeout_passed_to_sweep(self):
+        """--timeout N → timeout=N forwarded to run_sweep."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(
+                    Path(tmpdir), ["--timeout", "45"]) as (mock_sweep, _):
+                main()
+        self.assertEqual(mock_sweep.call_args.kwargs["timeout"], 45)
+
+    # ── --warmup / --no-warmup ────────────────────────────────────────────────
+
+    def test_warmup_called_by_default(self):
+        """Without --no-warmup, warmup_model must be called for each model."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), no_warmup=False) as (_, mock_warmup):
+                main()
+        mock_warmup.assert_called()
+
+    def test_no_warmup_skips_warmup(self):
+        """--no-warmup → warmup_model must not be called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self._patched_main(Path(tmpdir), no_warmup=True) as (_, mock_warmup):
+                main()
+        mock_warmup.assert_not_called()
+
+    # ── --out ─────────────────────────────────────────────────────────────────
+
+    def test_out_flag_writes_to_specified_path(self):
+        """--out PATH → output JSON written to that exact path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            out_path = tmp_path / "custom_output.json"
+            with self._patched_main(tmp_path, ["--out", str(out_path)]):
+                main()
+            self.assertTrue(out_path.exists())
+            data = json.loads(out_path.read_text())
+            self.assertIn("meta", data)
+
+    def test_out_flag_ignored_for_multiple_questions(self):
+        """--out is ignored when multiple --questions are given; files use auto names."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path  = Path(tmpdir)
+            out_path  = tmp_path / "should_not_exist.json"
+            with self._patched_main(
+                    tmp_path, ["--questions", "Q01", "Q10b",
+                               "--out", str(out_path)]):
+                main()
+            self.assertFalse(out_path.exists())
+            sweep_dir = tmp_path / "results" / "data" / "sweeps"
+            self.assertEqual(len(list(sweep_dir.glob("endpoint_sweep_*.json"))), 2)
 
 
 if __name__ == "__main__":

@@ -60,9 +60,10 @@ load_dotenv(Path.home() / ".env")
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR          = Path(__file__).parent
-DEFAULT_RESULTS_DIR = SCRIPT_DIR / "results" / "probes"
-MODELS_FILE         = SCRIPT_DIR / "probes" / "probe_models.json"
-QUESTIONS_FILE      = SCRIPT_DIR / "probes" / "questions.json"
+PROJECT_ROOT        = SCRIPT_DIR.parent
+DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "data" / "probes"
+MODELS_FILE         = PROJECT_ROOT / "probes" / "probe_models.json"
+QUESTIONS_FILE      = PROJECT_ROOT / "probes" / "questions.json"
 
 OLLAMA_LOCAL = "http://localhost:11434"
 OLLAMA_CLOUD = "https://ollama.com"
@@ -339,6 +340,7 @@ def run_classify_analysis(
     endpoint_types: list[str],
     judge_model: str,
     timeout: int,
+    max_chars: int = 5000,
 ) -> str:
     lines = [
         "# Behavioral Classification Analysis (2a)",
@@ -368,7 +370,7 @@ def run_classify_analysis(
 
             # Build response block for judge
             resp_block = "\n\n".join(
-                f"[{name}]\n{text[:1500]}" for name, text in available
+                f"[{name}]\n{text[:max_chars]}" for name, text in available
             )
             prompt = CLASSIFY_PROMPT_TEMPLATE.format(
                 question=qtext,
@@ -609,6 +611,10 @@ def main():
         help="Judge model timeout in seconds (default: 300)",
     )
     parser.add_argument(
+        "--max-chars", type=int, default=5000, metavar="N",
+        help="Max characters per response sent to judge (default: 5000)",
+    )
+    parser.add_argument(
         "--results-dir", default=str(DEFAULT_RESULTS_DIR),
     )
     parser.add_argument(
@@ -661,6 +667,7 @@ def main():
             section = run_classify_analysis(
                 results, registry, questions, endpoint_types,
                 judge_model=args.judge, timeout=args.timeout,
+                max_chars=args.max_chars,
             )
 
         elif mode == "compare":

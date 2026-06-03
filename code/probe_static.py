@@ -59,6 +59,18 @@ from probe_query_openai import (
     check_api_key as check_openai_api_key,
     provider_label,
 )
+from probe_query_llamacpp import (
+    is_llamacpp_backend,
+    query_chat_llamacpp,
+    query_generate_llamacpp,
+    check_server as check_llamacpp_server,
+)
+from probe_query_omlx import (
+    is_omlx_backend,
+    query_chat_omlx,
+    query_generate_omlx,
+    check_server as check_omlx_server,
+)
 
 OLLAMA_LOCAL = "http://localhost:11434"
 OLLAMA_CLOUD = "https://ollama.com"
@@ -424,6 +436,8 @@ def main():
     cfg.add_argument("--generate-timeout", default=1200, type=int,
                      help="Generate timeout in seconds (default: 1200)")
     cfg.add_argument("--no-generate",      action="store_true")
+    cfg.add_argument("--llamacpp-max-tokens", default=4096, type=int,
+                     help="Max tokens for llama.cpp chat and generate calls (default: 4096)")
     cfg.add_argument("--label",            default="")
 
     info = parser.add_argument_group("information")
@@ -496,16 +510,39 @@ def main():
     all_results = []
 
     for i, model in enumerate(models, 1):
-        entry    = get_model_entry(model, all_model_defs)
-        openai   = is_openai_backend(entry)
-        llm_url  = llm_url_for(model) if not openai else None
-        label_s  = provider_label(entry) if openai else ("cloud" if llm_url == OLLAMA_CLOUD else "local")
+        entry      = get_model_entry(model, all_model_defs)
+        openai     = is_openai_backend(entry)
+        llamacpp   = is_llamacpp_backend(entry)
+        omlx       = is_omlx_backend(entry)
+        llm_url    = llm_url_for(model) if not (openai or llamacpp or omlx) else None
+        if openai:
+            label_s = provider_label(entry)
+        elif llamacpp:
+            label_s = "llamacpp"
+        elif omlx:
+            label_s = "omlx"
+        else:
+            label_s = "cloud" if llm_url == OLLAMA_CLOUD else "local"
         compat_tag = " [raw:false]" if model in raw_false_models else ""
         compat_tag += " [chat-only]" if openai else ""
         print(f"[{i}/{len(models)}] {model}  [{label_s}]{compat_tag}")
 
         if openai:
             ok, detail = check_openai_api_key(entry)
+            if not ok:
+                print(f"  ⚠ Skipping — {detail}")
+                all_results.append({"model": model, "skipped": True,
+                                     "reason": detail, "responses": {}})
+                continue
+        elif llamacpp:
+            ok, detail = check_llamacpp_server(entry)
+            if not ok:
+                print(f"  ⚠ Skipping — {detail}")
+                all_results.append({"model": model, "skipped": True,
+                                     "reason": detail, "responses": {}})
+                continue
+        elif omlx:
+            ok, detail = check_omlx_server(entry)
             if not ok:
                 print(f"  ⚠ Skipping — {detail}")
                 all_results.append({"model": model, "skipped": True,
@@ -518,7 +555,8 @@ def main():
             continue
 
         model_result = {"model": model, "skipped": False,
-                        "llm_url": llm_url or label_s, "responses": {}}
+                        "llm_url": llm_url or label_s, "backend": label_s,
+                        "responses": {}}
 
         for q in questions:
             qid = q["id"]
@@ -526,6 +564,11 @@ def main():
 
             if openai:
                 chat = query_chat_openai(entry, q["text"], args.timeout)
+            elif llamacpp:
+                chat = query_chat_llamacpp(entry, q["text"], args.timeout,
+                                          max_tokens=args.llamacpp_max_tokens)
+            elif omlx:
+                chat = query_chat_omlx(entry, q["text"], args.timeout)
             else:
                 chat = query_chat(model, q["text"], args.timeout, llm_url=llm_url)
             print(f"chat:{'✓' if chat['success'] else '✗'} ", end="", flush=True)
@@ -534,6 +577,11 @@ def main():
             if not args.no_generate:
                 if openai:
                     gen = query_generate_openai(entry, q["text"], args.generate_timeout)
+                elif llamacpp:
+                    gen = query_generate_llamacpp(entry, q["text"], args.generate_timeout,
+                                                  n_predict=args.llamacpp_max_tokens)
+                elif omlx:
+                    gen = query_generate_omlx(entry, q["text"], args.generate_timeout)
                 else:
                     gen = query_generate(
                         model, q["text"], args.generate_timeout, llm_url=llm_url

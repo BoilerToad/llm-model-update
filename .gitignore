@@ -42,5 +42,11 @@ mlx/com.toddfirsich.*.plist
 # Misc
 probe_models_tail.json
 
-# Research findings and internal protocol — not for public repo
+# Research findings and internal protocol -- not for public repo
 NEW_MODEL_ASSESSMENT_PROTOCOL.md
+ENHANCEMENTS.md
+docs/
+
+# Claude session artifacts and coverage cache
+.claude/
+.coverage

@@ -17,11 +17,16 @@ Repeatability analysis:
   Low similarity = model is non-deterministic or KV-cache-sensitive.
 
 Post-evaluation recommendations:
-  - needs_raw_false      : flag models where raw:T consistently fails or is shallow
+  - raw_capable: false   : set when raw:T consistently fails or produces shallow output
   - chat_only            : flag models where both generate modes consistently fail
   - unreliable           : flag models with high failure rate (>30%) on any endpoint
   - suspiciously_fast    : flag raw:T completions averaging <2s with <60 tokens
   - enabled: false       : suggest disabling models that fail chat entirely
+
+Registry field raw_capable (probe_models.json):
+  null   — not yet evaluated (raw:T will be attempted)
+  true   — raw:T works reliably
+  false  — skip raw:T; run raw:F only
 
 Usage:
     python probe_endpoint_sweep.py                          # 11 sweeps, all enabled
@@ -299,14 +304,18 @@ def run_sweep(
         model_result = {"chat": chat}
 
         if not no_generate:
-            gen_raw   = run_generate(model, timeout, raw=True,  prompt=prompt)
-            gen_plain = run_generate(model, timeout, raw=False, prompt=prompt)
+            raw_capable = entry.get("raw_capable")  # None=unknown, False=skip raw:T
+            if raw_capable is not False:
+                gen_raw    = run_generate(model, timeout, raw=True,  prompt=prompt)
+                raw_status = f"{gen_raw['elapsed_s']:.1f}s" if gen_raw["success"] else "✗"
+                model_result["gen_raw"] = gen_raw
+            else:
+                raw_status = "--"
 
-            raw_status   = f"{gen_raw['elapsed_s']:.1f}s"   if gen_raw["success"]   else "✗"
+            gen_plain    = run_generate(model, timeout, raw=False, prompt=prompt)
             plain_status = f"{gen_plain['elapsed_s']:.1f}s" if gen_plain["success"] else "✗"
             print(f"raw:{raw_status} plain:{plain_status}", flush=True)
 
-            model_result["gen_raw"]   = gen_raw
             model_result["gen_plain"] = gen_plain
         else:
             print(flush=True)
@@ -533,12 +542,11 @@ def post_evaluate(
         raw_failure_rec_raised = False
 
         if s.gen_raw_fail_rate >= 0.90 and s.gen_plain_fail_rate < 0.20:
-            current_notes = entry.get("notes", "")
-            if "needs_raw_false" not in current_notes:
+            if entry.get("raw_capable") is not False:
                 recs.append(Recommendation(
-                    model, "notes",
-                    current   = current_notes[:60] + "..." if len(current_notes) > 60 else current_notes,
-                    suggested = f"[needs_raw_false] {current_notes}".strip(),
+                    model, "raw_capable",
+                    current   = entry.get("raw_capable"),
+                    suggested = False,
                     reason    = (f"raw:true failed {s.gen_raw_failures}/{s.total_sweeps} sweeps "
                                  f"({s.gen_raw_fail_rate:.0%}), raw:false succeeded "
                                  f"({1-s.gen_plain_fail_rate:.0%})."),
@@ -575,12 +583,11 @@ def post_evaluate(
                 if contaminated:
                     reasons.append(f"raw:T contaminated in "
                                    f"{s.gen_raw_contaminated}/{s.total_sweeps} sweeps")
-                current_notes = entry.get("notes", "")
-                if "needs_raw_false" not in current_notes:
+                if entry.get("raw_capable") is not False:
                     recs.append(Recommendation(
-                        model, "notes",
-                        current   = current_notes[:60] + "..." if len(current_notes) > 60 else current_notes,
-                        suggested = f"[needs_raw_false — shallow raw:T] {current_notes}".strip(),
+                        model, "raw_capable",
+                        current   = entry.get("raw_capable"),
+                        suggested = False,
                         reason    = "raw:true output is shallow/spurious: " + "; ".join(reasons),
                         confidence = "HIGH" if (shallow and high_ratio) else "MEDIUM",
                     ))
@@ -711,9 +718,9 @@ def main():
     # Question selection — mutually exclusive
     qgroup = parser.add_mutually_exclusive_group()
     qgroup.add_argument(
-        "--question-id", metavar="ID",
-        help="Use a question from questions.json by ID (e.g. Q10b, Q03). "
-             "Overrides the default democracy question.",
+        "--questions", nargs="+", metavar="ID",
+        help="One or more question IDs from questions.json (e.g. Q10b Q12b). "
+             "Each question runs the full sweep independently.",
     )
     qgroup.add_argument(
         "--list-questions", action="store_true",
@@ -743,18 +750,19 @@ def main():
         print()
         return
 
-    # ── Resolve question ───────────────────────────────────────────────────────
-    question_id: Optional[str] = None
-    if args.question_id:
-        try:
-            question, prompt = load_question_by_id(args.question_id)
-            question_id = args.question_id.upper()
-        except (FileNotFoundError, ValueError) as e:
-            print(f"✗ {e}")
-            sys.exit(1)
+    # ── Resolve question(s) ────────────────────────────────────────────────────
+    # Build list of (question_id, question_text, prompt) tuples to iterate over.
+    question_runs: list[tuple[Optional[str], str, str]] = []
+    if args.questions:
+        for qid in args.questions:
+            try:
+                q_text, q_prompt = load_question_by_id(qid)
+                question_runs.append((qid.upper(), q_text, q_prompt))
+            except (FileNotFoundError, ValueError) as e:
+                print(f"✗ {e}")
+                sys.exit(1)
     else:
-        question = DEFAULT_QUESTION
-        prompt   = DEFAULT_PROMPT
+        question_runs.append((None, DEFAULT_QUESTION, DEFAULT_PROMPT))
 
     # ── Ollama connectivity ────────────────────────────────────────────────────
     version   = get_ollama_version()
@@ -788,8 +796,7 @@ def main():
         sys.exit(1)
 
     # ── Run header ─────────────────────────────────────────────────────────────
-    q_source = (f"questions.json [{question_id}]"
-                if question_id else "built-in default")
+    q_ids_str = ", ".join(qid for qid, _, _ in question_runs if qid) or "built-in default"
     print(f"\n{'═'*80}")
     print(f"  probe_endpoint_sweep.py")
     print(f"  Ollama v{version} at {OLLAMA_LOCAL}")
@@ -799,8 +806,7 @@ def main():
     print(f"  Endpoints : chat{'' if args.no_generate else ' + generate (raw:T and raw:F)'}")
     print(f"  Pause     : {args.pause}s between sweeps")
     print(f"  Warmup    : {'yes (untimed)' if args.warmup else 'no'}")
-    print(f"  Q source  : {q_source}")
-    print(f"  Question  : {question}")
+    print(f"  Questions : {q_ids_str}")
     print(f"  Started   : {datetime.now():%Y-%m-%d %H:%M:%S}")
     print(f"{'═'*80}")
 
@@ -815,61 +821,68 @@ def main():
     # ── Build registry map for run_sweep routing ──────────────────────────────
     reg_map = load_registry()
 
-    # ── Run sweeps ─────────────────────────────────────────────────────────────
-    stats: dict[str, ModelStats] = {m: ModelStats(m) for m in models}
-    all_sweeps = []
+    # ── Run sweeps — one full pass per question ────────────────────────────────
+    for question_id, question, prompt in question_runs:
+        if len(question_runs) > 1:
+            print(f"\n{'─'*80}")
+            print(f"  Question [{question_id}]: {question}")
+            print(f"{'─'*80}")
 
-    for sweep_num in range(1, args.sweeps + 1):
-        sweep_results = run_sweep(
-            models       = models,
-            timeout      = args.timeout,
-            no_generate  = args.no_generate,
-            sweep_num    = sweep_num,
-            total_sweeps = args.sweeps,
-            question     = question,
-            prompt       = prompt,
-            registry     = reg_map,
-        )
-        all_sweeps.append(sweep_results)
-        for model, result in sweep_results.items():
-            stats[model].absorb(result)
-        if sweep_num < args.sweeps:
-            time.sleep(args.pause)
+        stats: dict[str, ModelStats] = {m: ModelStats(m) for m in models}
+        all_sweeps = []
 
-    print_sweep_summary(stats, args.no_generate)
-    recs = post_evaluate(stats, args.no_generate, args.sweeps)
-    print_recommendations(recs)
+        for sweep_num in range(1, args.sweeps + 1):
+            sweep_results = run_sweep(
+                models       = models,
+                timeout      = args.timeout,
+                no_generate  = args.no_generate,
+                sweep_num    = sweep_num,
+                total_sweeps = args.sweeps,
+                question     = question,
+                prompt       = prompt,
+                registry     = reg_map,
+            )
+            all_sweeps.append(sweep_results)
+            for model, result in sweep_results.items():
+                stats[model].absorb(result)
+            if sweep_num < args.sweeps:
+                time.sleep(args.pause)
 
-    # ── Save results ───────────────────────────────────────────────────────────
-    output = {
-        "meta": {
-            "run_at":       datetime.now().isoformat(),
-            "ollama":       version,
-            "sweeps":       args.sweeps,
-            "timeout_s":    args.timeout,
-            "no_generate":  args.no_generate,
-            "warmup":       args.warmup,
-            "question":     question,
-            "question_id":  question_id,
-            "question_source": q_source,
-            "models":       models,
-        },
-        "stats":           {m: s.to_dict() for m, s in stats.items()},
-        "recommendations": [r.to_dict() for r in recs],
-        "raw_sweeps":      all_sweeps,
-    }
+        print_sweep_summary(stats, args.no_generate)
+        recs = post_evaluate(stats, args.no_generate, args.sweeps)
+        print_recommendations(recs)
 
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-        q_tag    = f"_{question_id}" if question_id else ""
-        out_path = ROOT_DIR / "results" / "data" / "sweeps" / f"endpoint_sweep{q_tag}_{ts}.json"
+        # ── Save results ───────────────────────────────────────────────────────
+        q_source = (f"questions.json [{question_id}]" if question_id else "built-in default")
+        output = {
+            "meta": {
+                "run_at":          datetime.now().isoformat(),
+                "ollama":          version,
+                "sweeps":          args.sweeps,
+                "timeout_s":       args.timeout,
+                "no_generate":     args.no_generate,
+                "warmup":          args.warmup,
+                "question":        question,
+                "question_id":     question_id,
+                "question_source": q_source,
+                "models":          models,
+            },
+            "stats":           {m: s.to_dict() for m, s in stats.items()},
+            "recommendations": [r.to_dict() for r in recs],
+            "raw_sweeps":      all_sweeps,
+        }
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  Results saved → {out_path}")
-    print(f"{'─'*80}\n")
+        if args.out and len(question_runs) == 1:
+            out_path = Path(args.out)
+        else:
+            ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
+            q_tag   = f"_{question_id}" if question_id else ""
+            out_path = ROOT_DIR / "results" / "data" / "sweeps" / f"endpoint_sweep{q_tag}_{ts}.json"
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  Results saved → {out_path}")
+        print(f"{'─'*80}\n")
 
 
 if __name__ == "__main__":

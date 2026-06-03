@@ -28,8 +28,9 @@ from datetime import datetime
 from pathlib import Path
 
 SCRIPT_DIR  = Path(__file__).parent
-DB_PATH     = SCRIPT_DIR / "results" / "probe_results.db"
-ANALYSIS_DIR = SCRIPT_DIR / "results" / "analysis"
+PROJECT_ROOT = SCRIPT_DIR.parent
+DB_PATH     = PROJECT_ROOT / "results" / "db" / "probe_results.db"
+ANALYSIS_DIR = PROJECT_ROOT / "results" / "analysis"
 
 GEO_ORDER = ["US/Meta","US/Google","US/OpenAI","US/NVIDIA",
              "France/Mistral","France+US/Mistral+NVIDIA",
